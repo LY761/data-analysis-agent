@@ -533,6 +533,7 @@ function autoResize(el) {
 }
 
 // ==================== Format Response ====================
+let mkSeq = 0;  // 市场卡片唯一id计数器（同毫秒多次渲染也保证不冲突）
 function formatResponse(data, question) {
   let html = '';
 
@@ -567,18 +568,19 @@ function formatResponse(data, question) {
   // Market intelligence: 选品分析卡片
   if (data.recommendation) {
     const rec = data.recommendation;
+    const mk_uid = 'mk_' + (++mkSeq) + '_' + Date.now();
     html += '<div style="font-size:14px;line-height:1.8;">'
-      + '<h3>📊 ' + (data.category || '') + ' 选品机会</h3>'
-      + '<p>评分：' + (rec.score ?? '-') + '/100 · ' + (rec.verdict || '') + '</p>'
-      + '<p>建议价格带：' + (rec.price_band || '-') + '</p>'
-      + '<p>竞争强度：' + (rec.competition || '-') + '</p>'
-      + '<p>' + (rec.reasoning || data.profile || '') + '</p>'
+      + '<h3>📊 ' + escapeHtml(data.category || '') + ' 选品机会</h3>'
+      + '<p>评分：' + escapeHtml(rec.score ?? '-') + '/100 · ' + escapeHtml(rec.verdict || '') + '</p>'
+      + '<p>建议价格带：' + escapeHtml(rec.price_band || '-') + '</p>'
+      + '<p>竞争强度：' + escapeHtml(rec.competition || '-') + '</p>'
+      + '<p>' + escapeHtml(rec.reasoning || data.profile || '') + '</p>'
       + '</div>';
     if (data.products && data.products.length) {
-      html += '<button class="toggle-btn" onclick="toggleSection(\'mk_data\')">📄 产品数据 (' + data.products.length + '个)</button>';
-      html += '<div id="mk_data" class="toggle-section"><table style="width:100%;border-collapse:collapse;">'
+      html += '<button class="toggle-btn" onclick="toggleSection(\'' + mk_uid + '\')">📄 产品数据 (' + data.products.length + '个)</button>';
+      html += '<div id="' + mk_uid + '" class="toggle-section"><table style="width:100%;border-collapse:collapse;">'
         + '<tr><th style="text-align:left;">产品</th><th>价格</th><th>评分</th><th>评论</th></tr>'
-        + data.products.map(p => '<tr><td>' + (p.title||'').slice(0,30) + '</td><td>' + (p.price ?? '-') + '</td><td>' + (p.rating ?? '-') + '</td><td>' + (p.review_count ?? '-') + '</td></tr>').join('')
+        + data.products.map(p => '<tr><td>' + escapeHtml((p.title||'').slice(0,30)) + '</td><td>' + escapeHtml(p.price ?? '-') + '</td><td>' + escapeHtml(p.rating ?? '-') + '</td><td>' + escapeHtml(p.review_count ?? '-') + '</td></tr>').join('')
         + '</table></div>';
     }
     return html;
@@ -588,8 +590,8 @@ function formatResponse(data, question) {
   if (data.sellpoints || data.pains || data.suggestions) {
     const prod = data.product || {};
     html += '<div style="font-size:14px;line-height:1.8;">';
-    html += '<h3>📦 ' + (prod.title || data.query || '') + '</h3>';
-    if (prod.price) html += '<p>参考价格：' + prod.price + '</p>';
+    html += '<h3>📦 ' + escapeHtml(prod.title || data.query || '') + '</h3>';
+    if (prod.price) html += '<p>参考价格：' + escapeHtml(prod.price) + '</p>';
     if (data.sellpoints) html += '<p><strong>💡 核心卖点</strong></p>' + renderMarkdown(data.sellpoints);
     if (data.pains) html += '<p><strong>⚠️ 用户痛点</strong></p>' + renderMarkdown(data.pains);
     if (data.suggestions) html += '<p><strong>🚀 改进建议</strong></p>' + renderMarkdown(data.suggestions);
