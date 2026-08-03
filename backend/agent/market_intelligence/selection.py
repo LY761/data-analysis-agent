@@ -1,6 +1,7 @@
 """选品流水线：搜索 → 抓取 → 品类画像 → 内部对比 → 选品报告"""
 import json
 import logging
+import re
 from openai import OpenAI
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from agent.market_intelligence.search import search_products
@@ -26,12 +27,15 @@ def _default_client():
 def _compare_internal(category: str) -> list:
     """查内部数据库是否有相似产品（按品类关键词模糊匹配）"""
     try:
+        # 撇号转义：避免 "women's" 这类词截断后（women'）破坏 SQL 语法
+        kw = category[:6].replace("'", "''")
         r = executor.execute(
             f"SELECT product_name, category, unit_price FROM products "
-            f"WHERE is_active=1 AND (category LIKE '%{category[:6]}%' "
-            f"OR product_name LIKE '%{category[:6]}%') LIMIT 5"
+            f"WHERE is_active=1 AND (category LIKE '%{kw}%' "
+            f"OR product_name LIKE '%{kw}%') LIMIT 5"
         )
-        return r.get("data", [])
+        # executor 出错时 data 可能为 None，降级为 []，遵守 -> list 契约
+        return r.get("data") or []
     except Exception:
         return []
 
@@ -69,6 +73,13 @@ def analyze_selection(category: str, llm_client=None, stream_cb=None) -> dict:
                 category=category, profile=profile,
                 internal=json.dumps(internal, ensure_ascii=False))},
         ])
+        # 容错：LLM 可能返回 ```json 围栏或前后散文，剥离后取首个 {...} 再解析
+        rec_raw = rec_raw.strip()
+        if rec_raw.startswith("```"):
+            rec_raw = re.sub(r"^```[a-zA-Z]*\s*", "", rec_raw).removesuffix("```").strip()
+        m = re.search(r"\{.*\}", rec_raw, re.DOTALL)
+        if m:
+            rec_raw = m.group(0)
         recommendation = json.loads(rec_raw)
 
         return {"category": category, "products": scraped, "profile": profile,
