@@ -25,3 +25,9 @@ demo_sales.db
 
 # 临时测试文件
 _test_*.py
+
+# 京东登录会话（含 cookie，绝不提交）
+jd_session/
+
+# 评测报告（eval_agent.py 生成物，可随时重跑）
+eval_report.json
