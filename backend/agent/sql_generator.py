@@ -71,6 +71,14 @@ SQL_GENERATION_SYSTEM_PROMPT = """你是SQL生成助手。根据用户问题和�
 | 最近30天 | order_date >= DATETIME('now', '-30 days') |
 | 今年 | strftime('%Y', order_date) = strftime('%Y', 'now') |
 | 去年 | strftime('%Y', order_date) = strftime('%Y', 'now', '-1 year') |
+| 下个月 | strftime('%Y-%m', order_date) = strftime('%Y-%m', 'now', '+1 month') |
+| 明年 | strftime('%Y', order_date) = strftime('%Y', 'now', '+1 year') |
+| 某一年（如2020年） | strftime('%Y', order_date) = '2020' |
+
+**关键原则：用户问了具体时间，WHERE里就必须写时间过滤条件！**
+- 问"2020年的销售额" → 必须 WHERE strftime('%Y', order_date)='2020'，禁止返回全部年份
+- 问"下个月的订单" → 必须 WHERE ... '+1 month'，禁止返回全部月份
+- 时间范围外没有数据 → 查询结果自然为空，这是正确的
 
 ## 查产品注意
 - 用户说具体产品名（如"显示器""机械键盘"）→ 查 product_name LIKE '%关键词%'，不是 category

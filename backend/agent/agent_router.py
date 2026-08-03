@@ -112,14 +112,25 @@ class AgentRouter:
         "查询", "查一下", "统计", "报表", "数据", "卖得", "热销", "增长",
     ]
     # 市场情报关键词：选品/商品研究
+    # 注意：不含"差评"——"有差评的产品"是内部查询（查product_reviews表），不是市场情报。
+    #       商品研究靠"研究一下/分析一下这个产品"触发。
     MARKET_INTEL_KEYWORDS = ["选品", "市场机会", "能不能做", "值得卖吗", "竞争怎么样",
-                             "研究一下", "分析一下这个产品", "差评", "痛点"]
+                             "研究一下", "分析一下这个产品", "痛点"]
     SELECTION_KEYWORDS = ["选品", "市场机会", "能不能做", "值得卖吗", "竞争怎么样"]
     # 明确的内部数据指标词：命中则视为数据查询，不走进市场情报
     DATA_OVERRIDE_KEYWORDS = ["上个月", "本月", "这个月", "上月", "最近", "昨天", "今天",
                               "今年", "去年", "环比", "同比", "销售额", "销量", "订单数",
                               "订单量", "库存", "成本", "利润", "毛利", "收入", "客户",
                               "会员", "评价", "投诉"]
+    # 含这些词的查询属于"具体分析意图"（排名/对比/复合条件/类别限定），
+    # 预写SQL卡片无法满足，跳过快捷卡片、走SQL精确生成。
+    COMPLEX_INTENT_KEYWORDS = [
+        "最高的", "最贵的", "最便宜的", "最差的", "最多的", "最少的",
+        "排名", "排行", "对比", "比较", "且", "并", "同时", "还",
+        "每个", "各", "哪个", "哪些", "类别的", "类目", "办公用品",
+        "电子产品", "家居", "服装", "食品",
+        "没有", "无",   # 双重否定/条件筛选（"没有退款的订单"）应走SQL
+    ]
 
     def route(self, user_message: str, conversation_history: list = None) -> dict:
         """
@@ -142,8 +153,12 @@ class AgentRouter:
             return r
 
         # 2. 快捷卡片匹配（预写SQL，0 Token）
+        #    仅处理"单一明确意图"的查询；含排名/对比/复合条件/类别限定等复杂意图时
+        #    跳过卡片，走SQL精确生成（避免"本月销售额最高的5个产品"被"本月销售"卡片截胡）。
         for card_key, patterns in self.QUICK_CARD_KEYWORDS.items():
             if any(p in msg for p in patterns):
+                if any(c in msg for c in self.COMPLEX_INTENT_KEYWORDS):
+                    break
                 r = {"mode": "quick_card", "card_key": card_key, "reason": "快捷卡片匹配"}
                 self.cache[msg] = r
                 return r
