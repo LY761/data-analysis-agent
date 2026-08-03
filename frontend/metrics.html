@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>检索质量监控 · 数据分析 Agent</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--accent:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--text:#e2e8f0;--muted:#94a3b8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh;padding:24px 32px}
+h1{font-size:22px;margin-bottom:4px}
+h2{font-size:14px;margin-bottom:16px;color:var(--muted);font-weight:400}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}
+.card{background:var(--card);border-radius:10px;padding:16px}
+.card .label{font-size:12px;color:var(--muted);margin-bottom:4px}
+.card .value{font-size:28px;font-weight:700}
+.card .sub{font-size:12px;color:var(--muted);margin-top:4px}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}
+.row{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap}
+.col{flex:1;min-width:300px}
+.bar-wrap{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px}
+.bar-wrap .label{width:70px;text-align:right;flex-shrink:0}
+.bar-bg{flex:1;height:20px;background:#334155;border-radius:4px;overflow:hidden}
+.bar-fill{height:100%;border-radius:4px;transition:width .5s}
+.bar-wrap .val{width:50px;text-align:right;color:var(--muted);flex-shrink:0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #334155}
+th{color:var(--muted);font-weight:500;font-size:12px}
+.tok{font-size:11px;color:var(--muted)}
+.footer{margin-top:16px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px}
+.badge-hit{background:#064e3b;color:var(--ok)}
+.badge-vec{background:#451a03;color:var(--warn)}
+.badge-ok{background:#064e3b;color:var(--ok)}
+.badge-err{background:#450a0a;color:var(--err)}
+#recent tr:hover{background:#1e293b}
+a{color:var(--accent);text-decoration:none;font-size:13px}
+a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<h1>📊 检索质量监控</h1>
+<h2>数据分析 Agent · NL2SQL 检索链路健康看板</h2>
+
+<div class="grid" id="kpis"></div>
+
+<div class="row">
+  <div class="col">
+    <div class="card">
+      <div class="label" style="margin-bottom:12px">📈 指标细分</div>
+      <div id="bars"></div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card">
+      <div class="label" style="margin-bottom:12px">⚡ Token 消耗拆解（平均值）</div>
+      <div id="tokenBars"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="label" style="margin-bottom:12px">📋 最近查询</div>
+  <table>
+    <thead><tr><th>问题</th><th>检索</th><th>结果</th><th>Token</th><th>耗时</th></tr></thead>
+    <tbody id="recent"></tbody>
+  </table>
+</div>
+
+<div class="footer">
+  <span id="updatedAt">—</span>
+  <span><span id="totalQueries">0</span> 次查询 · 精度 @k = <span id="precAtK">—</span> · 漏损 <span id="recallGap">0</span> 次</span>
+</div>
+
+<script>
+const API = '/api/metrics/retrieval';
+
+async function load() {
+  try {
+    const d = await (await fetch(API)).json();
+    render(d);
+    document.getElementById('updatedAt').textContent = '更新于 ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+function render(d) {
+  const s = d.summary;
+
+  // KPI cards
+  const kpis = [
+    {label:'总查询数', value:s.total_queries, sub:''},
+    {label:'关键词命中率', value:s.keyword_hit_rate+'%', sub:s.vector_fallback_rate+'% 向量降级', cls:s.keyword_hit_rate>=90?'ok':s.keyword_hit_rate>=70?'warn':'err'},
+    {label:'成功率', value:s.success_rate+'%', sub:s.total_queries+' 次查询', cls:s.success_rate>=90?'ok':s.success_rate>=70?'warn':'err'},
+    {label:'召回漏损', value:s.recall_gap_events, sub:'次（SQL用了未检索到的表）', cls:s.recall_gap_events===0?'ok':'err'},
+    {label:'累计Token', value:s.sum_token_total.toLocaleString(), sub:'均 '+s.avg_token_total+' / 次'},
+    {label:'平均延迟', value:(s.avg_total_ms||0).toFixed(0)+'ms', sub:'检索 '+(s.avg_retrieve_ms||0).toFixed(0)+'ms · 生成 '+(s.avg_generate_ms||0).toFixed(0)+'ms'},
+  ];
+  document.getElementById('kpis').innerHTML = kpis.map(k =>
+    `<div class="card"><div class="label">${k.label}</div><div class="value ${k.cls||''}">${k.value}</div><div class="sub">${k.sub}</div></div>`
+  ).join('');
+
+  // Breakdown bars
+  document.getElementById('bars').innerHTML = [
+    {label:'关键词命中',val:s.keyword_hit_rate,color:'var(--ok)',unit:'%'},
+    {label:'向量降级',val:s.vector_fallback_rate,color:'var(--warn)',unit:'%'},
+    {label:'成功率',val:s.success_rate,color:'var(--ok)',unit:'%'},
+  ].map(b => {
+    const w = b.val||0;
+    return `<div class="bar-wrap"><span class="label">${b.label}</span><div class="bar-bg"><div class="bar-fill" style="width:${w}%;background:${b.color}"></div></div><span class="val">${w}${b.unit}</span></div>`;
+  }).join('');
+
+  // Token breakdown
+  const tokMax = Math.max(s.avg_token_total||1, 100);
+  document.getElementById('tokenBars').innerHTML = [
+    {label:'理解',val:s.avg_token_understand||0,color:'#a78bfa'},
+    {label:'生成',val:s.avg_token_generate||0,color:'#38bdf8'},
+    {label:'修正',val:s.avg_token_fix||0,color:'#f59e0b'},
+    {label:'回答',val:s.avg_token_answer||0,color:'#22c55e'},
+  ].map(b => {
+    const pct = Math.round((b.val||0)/tokMax*100);
+    return `<div class="bar-wrap"><span class="label">${b.label}</span><div class="bar-bg"><div class="bar-fill" style="width:${pct}%;background:${b.color}"></div></div><span class="val">${b.val||0} tok</span></div>`;
+  }).join('');
+
+  // Recent table
+  document.getElementById('recent').innerHTML = d.recent.map(r => {
+    const kw = r.keyword_hit ? '<span class="badge badge-hit">关键词</span>' : '<span class="badge badge-vec">向量</span>';
+    const ok = r.success ? '<span class="badge badge-ok">✓</span>' : '<span class="badge badge-err">✗</span>';
+    return `<tr id="recent">
+      <td>${(r.question||'').slice(0,50)}</td>
+      <td>${kw}</td>
+      <td>${ok}</td>
+      <td class="tok">${r.tokens.understand}+${r.tokens.generate}=${r.tokens.total}</td>
+      <td>${(r.total_ms||0).toFixed(0)}ms</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('totalQueries').textContent = s.total_queries;
+  document.getElementById('precAtK').textContent = s.avg_precision_at_k;
+  document.getElementById('recallGap').textContent = s.recall_gap_events;
+}
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据分析 Agent</title>
+<script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+<style>
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #e6edf3; --text-muted: #8b949e; --accent: #58a6ff;
+  --success: #3fb950; --warning: #d2991d; --error: #f85149;
+  --radius: 12px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); height: 100vh; display: flex; overflow: hidden;
+}
+/* Main content wrapper */
+.main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* Left sidebar */
+.sidebar {
+  width: 48px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; padding: 12px 0;
+  transition: width .25s ease; overflow: hidden; z-index: 10;
+}
+.sidebar.expanded { width: 420px; }
+.sidebar-inner { width: 420px; display: flex; flex-direction: column; height: 100%; }
+.sidebar .quick-tab {
+  width: 36px; min-height: 120px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  writing-mode: vertical-rl; font-size: 14px; font-weight: 600; letter-spacing: 4px;
+  color: var(--accent); transition: all .2s; user-select: none; flex-shrink: 0; margin: 0 6px;
+}
+.sidebar .quick-tab:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sidebar .quick-tab.active { background: var(--accent); color: #fff; }
+/* Panel content inside sidebar (hidden when collapsed) */
+.sidebar .panel-content {
+  display: none; flex: 1; overflow-y: auto; padding: 0 16px 16px 8px;
+}
+.sidebar.expanded .panel-content { display: block; }
+.sidebar.expanded .quick-tab { margin-bottom: 12px; }
+.sidebar .panel-content::-webkit-scrollbar { width: 4px; }
+.sidebar .panel-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.sidebar .panel-content h4 {
+  font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px;
+  margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.sidebar .panel-content h4:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+.sidebar .panel-content .quick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.sidebar .panel-content .quick-card {
+  padding: 10px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  cursor: pointer; transition: all .15s; text-align: center; font-size: 12px;
+}
+.sidebar .panel-content .quick-card:hover { border-color: var(--accent); background: #1a2332; }
+.sidebar .panel-content .quick-card .icon { font-size: 20px; margin-bottom: 2px; }
+.sidebar .panel-content .quick-card .label { font-weight: 600; font-size: 11px; }
+.sidebar .panel-content .quick-card .desc { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+/* Header */
+.header {
+  padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.header h1 span { color: var(--accent); }
+.header .status { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+.header .status .dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; }
+
+/* Chat area */
+.chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.chat::-webkit-scrollbar { width: 6px; }
+.chat::-webkit-scrollbar-track { background: transparent; }
+.chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Messages */
+.msg { display: flex; gap: 12px; max-width: 800px; animation: fadeIn .3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.msg.user { align-self: flex-end; flex-direction: row-reverse; }
+.msg.assistant { align-self: flex-start; }
+.msg .avatar {
+  width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.msg.user .avatar { background: var(--accent); }
+.msg.assistant .avatar { background: var(--surface); border: 1px solid var(--border); }
+.msg .bubble {
+  padding: 12px 16px; border-radius: var(--radius); font-size: 14px; line-height: 1.6;
+  word-break: break-word; min-width: 60px;
+}
+.msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.msg.assistant .bubble {
+  background: var(--surface); border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+/* Bubble content */
+.bubble h2 { font-size: 16px; margin: 14px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.bubble h3 { font-size: 14px; margin: 12px 0 6px; color: var(--accent); }
+.bubble h4 { font-size: 13px; margin: 10px 0 4px; }
+.bubble p { margin: 4px 0; }
+.bubble ul, .bubble ol { margin: 6px 0; padding-left: 20px; }
+.bubble li { margin: 2px 0; }
+.bubble table { border-collapse: collapse; margin: 8px 0; font-size: 12px; width: 100%; }
+.bubble th { background: var(--bg); padding: 6px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+.bubble td { padding: 5px 10px; border-bottom: 1px solid var(--border); }
+.bubble strong { color: var(--accent); }
+.bubble code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+.bubble pre { background: #0d1117; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; border: 1px solid var(--border); }
+.bubble pre code { background: none; padding: 0; font-size: 12px; color: #c9d1d9; }
+
+/* SQL block */
+.sql-block {
+  background: #0d1117; border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; overflow: hidden;
+}
+.sql-block .sql-header {
+  padding: 6px 12px; background: #1a1f2b; font-size: 11px; color: var(--text-muted);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.sql-block pre { margin: 0; border: none; border-radius: 0; }
+
+/* Chart in bubble */
+.bubble .chart-wrap { width: 100%; height: 300px; margin: 8px 0; }
+
+/* Welcome */
+.welcome {
+  text-align: center; padding: 60px 20px; color: var(--text-muted);
+}
+.welcome h2 { font-size: 24px; color: var(--text); margin-bottom: 8px; }
+.welcome p { font-size: 14px; margin-bottom: 24px; }
+.welcome .examples {
+  display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 600px; margin: 0 auto;
+}
+.welcome .example {
+  padding: 8px 16px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; font-size: 13px; cursor: pointer; transition: all .2s; color: var(--text-muted);
+}
+.welcome .example:hover { border-color: var(--accent); color: var(--text); }
+
+/* Loading */
+.typing { display: flex; gap: 4px; padding: 4px 0; }
+.typing span { width: 6px; height: 6px; background: var(--text-muted); border-radius: 50%; animation: bounce 1.2s infinite; }
+.typing span:nth-child(2) { animation-delay: .2s; }
+.typing span:nth-child(3) { animation-delay: .4s; }
+@keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
+
+/* Input area */
+.input-area {
+  padding: 16px 20px; background: var(--surface); border-top: 1px solid var(--border);
+  display: flex; gap: 10px; align-items: flex-end; flex-shrink: 0;
+}
+.input-row { display: flex; gap: 10px; flex: 1; align-items: flex-end; }
+.input-row textarea {
+  flex: 1; padding: 12px 16px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 24px; color: var(--text); font-size: 14px; font-family: inherit;
+  resize: none; outline: none; transition: border-color .2s; min-height: 44px; max-height: 120px;
+  line-height: 1.4;
+}
+.input-row textarea:focus { border-color: var(--accent); }
+.input-row textarea::placeholder { color: var(--text-muted); }
+
+.send-btn {
+  padding: 12px 20px; background: var(--accent); border: none; border-radius: 24px;
+  color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .2s;
+  white-space: nowrap;
+}
+.send-btn:hover { opacity: .85; }
+.send-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* (quick panel styles moved to sidebar .panel-content above) */
+
+/* Toast */
+.toast {
+  position: fixed; top: 20px; right: 20px; padding: 10px 20px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; font-size: 13px; z-index: 200;
+  animation: fadeIn .3s ease; box-shadow: 0 4px 20px rgba(0,0,0,.4);
+}
+
+/* Toggle buttons for SQL/chart/data */
+.toggle-btn {
+  padding: 4px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 14px; color: var(--text-muted); font-size: 11px; cursor: pointer;
+  transition: all .15s;
+}
+.toggle-btn:hover { border-color: var(--accent); color: var(--text); }
+.toggle-section { display: none; margin-top: 8px; }
+.toggle-section.show { display: block; }
+
+/* Stage progress */
+.stage-progress { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .chat { padding: 12px; }
+  .msg { max-width: 100%; }
+  .quick-panel { width: 90vw; left: -20px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Left sidebar: 快捷卡片 -->
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-inner">
+    <button class="quick-tab" id="quickTab" onclick="toggleQuickPanel()" title="快捷卡片">快捷卡片</button>
+    <div class="panel-content" id="panelContent">
+      <h4>📊 快捷查询</h4>
+      <div class="quick-grid" id="quickQueryGrid"></div>
+      <h4>📈 商业智能</h4>
+      <div class="quick-grid">
+        <div class="quick-card" onclick="runQuickAction('anomalies')"><div class="icon">🚨</div><div class="label">异常检测</div><div class="desc">销售额/退款异常</div></div>
+        <div class="quick-card" onclick="runQuickAction('trends')"><div class="icon">📉</div><div class="label">趋势预警</div><div class="desc">销量连续下滑</div></div>
+        <div class="quick-card" onclick="runQuickAction('daily_report')"><div class="icon">📋</div><div class="label">运营日报</div><div class="desc">LLM生成总结</div></div>
+      </div>
+      <h4>🔍 竞品分析</h4>
+      <div class="quick-grid" id="competitorGrid">
+        <div class="quick-card" onclick="runQuickAction('competitor')"><div class="icon">🔍</div><div class="label">竞品对比</div><div class="desc">LLM分析竞品数据</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Main content -->
+<div class="main-wrap">
+<div class="header">
+  <h1><span>📊</span> 数据分析 Agent</h1>
+  <div class="status"><span class="dot"></span> NL2SQL 智能分析</div>
+</div>
+
+<div class="chat" id="chat">
+  <div class="welcome" id="welcome">
+    <h2>👋 有什么可以帮你的？</h2>
+    <p>问我任何关于数据的问题，或者让我帮你分析竞品</p>
+    <div class="examples">
+      <span class="example" onclick="sendExample(this.textContent)">本月销售额是多少</span>
+      <span class="example" onclick="sendExample(this.textContent)">库存不足的产品有哪些</span>
+      <span class="example" onclick="sendExample(this.textContent)">分析一下安克创新</span>
+      <span class="example" onclick="sendExample(this.textContent)">最近7天销售趋势</span>
+      <span class="example" onclick="sendExample(this.textContent)">哪个产品评分最高</span>
+      <span class="example" onclick="sendExample(this.textContent)">对比我们的定价和竞品</span>
+    </div>
+  </div>
+</div>
+
+<!-- 快捷卡片区（折叠在输入框上方） -->
+<div id="quickCardsBar" style="padding: 0 20px;">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer;" onclick="toggleSection('quickCardsBody')">
+    <span style="font-size:12px;color:var(--text-muted);">⚡ 快捷查询</span>
+    <span id="quickCardsToggle" style="font-size:10px;color:var(--text-muted);">▼</span>
+  </div>
+  <div id="quickCardsBody" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+</div>
+
+<div class="input-area">
+  <div class="input-row" id="inputRow">
+    <textarea id="input" rows="1" placeholder="问数据问题，或输入竞品名称进行分析..." onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+  </div>
+  <button class="send-btn" id="sendBtn" onclick="sendMessage()">发送</button>
+</div>
+</div>
+
+<script>
+// ==================== Quick Query Cards ====================
+const QUICK_QUERIES = [
+  {key:'monthly_sales',icon:'💰',label:'本月销售额'},
+  {key:'last_month_sales',icon:'📊',label:'上月销售额'},
+  {key:'top5_products',icon:'🏆',label:'热销Top5'},
+  {key:'worst5_products',icon:'📉',label:'滞销Top5'},
+  {key:'stock_alert',icon:'⚠️',label:'库存预警'},
+  {key:'category_sales',icon:'🥧',label:'品类占比'},
+  {key:'region_sales',icon:'🗺️',label:'地区销售'},
+  {key:'member_analysis',icon:'👑',label:'会员消费'},
+  {key:'payment_methods',icon:'💳',label:'支付方式'},
+  {key:'month_vs_last',icon:'📈',label:'环比对比'},
+  {key:'refund_analysis',icon:'↩️',label:'退款分析'},
+  {key:'last_7days_trend',icon:'📅',label:'7天趋势'},
+  {key:'product_review_score',icon:'⭐',label:'产品评分'},
+  {key:'supplier_analysis',icon:'🏭',label:'供应商分析'},
+];
+
+function buildQuickCards() {
+  const grid = document.getElementById('quickCardsBody');
+  if (!grid) return;
+  grid.innerHTML = QUICK_QUERIES.map(q =>
+    `<div class="quick-card" onclick="runQuickCard('${q.key}','${q.label}')"><div class="icon">${q.icon}</div><div class="label">${q.label}</div></div>`
+  ).join('');
+}
+
+
+// ==================== Chat State ====================
+let messages = [];
+let chartInst = null;
+
+const CHAT_STORAGE_KEY = 'agent_chat_messages';
+
+function addMessage(role, content) {
+  messages.push({role, content, id: Date.now()});
+  try { localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages.slice(-50))); } catch(e) {}
+  renderMessages();
+}
+
+// Load saved messages on start
+(function loadSavedMessages() {
+  try {
+    const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (saved) { messages = JSON.parse(saved); renderMessages(); }
+  } catch(e) {}
+})();
+
+function renderMessages() {
+  const chat = document.getElementById('chat');
+  const welcome = document.getElementById('welcome');
+  if (welcome && messages.length > 0) welcome.style.display = 'none';
+
+  // Rebuild all messages
+  let html = messages.length === 0 ? (welcome ? welcome.outerHTML : '') : '';
+  for (const m of messages) {
+    const avatar = m.role === 'user' ? '👤' : '🤖';
+    html += `<div class="msg ${m.role}">
+      <div class="avatar">${avatar}</div>
+      <div class="bubble">${m.content}</div>
+    </div>`;
+  }
+  chat.innerHTML = html;
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addLoading() {
+  const chat = document.getElementById('chat');
+  const welcome = document.getElementById('welcome');
+  if (welcome) welcome.style.display = 'none';
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.id = 'loadingMsg';
+  div.innerHTML = '<div class="avatar">🤖</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>';
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function removeLoading() {
+  const el = document.getElementById('loadingMsg');
+  if (el) el.remove();
+}
+
+function updateLoading(text) {
+  const el = document.getElementById('loadingMsg');
+  if (el) {
+    const bubble = el.querySelector('.bubble');
+    bubble.innerHTML = '<div class="typing"><span></span><span></span><span></span></div><div class="stage-progress">' + text + '</div>';
+  }
+}
+
+// ==================== Send Message（流式） ====================
+async function sendMessage(text) {
+  const input = document.getElementById('input');
+  const query = (text || input.value).trim();
+  if (!query) return;
+  if (!text) input.value = '';
+  hideQuickPanel();
+
+  addMessage('user', query);
+  addLoading();
+
+  const chat = document.getElementById('chat');
+  let streamEl = null;
+  let answerBuf = '';        // 已收到完整文本
+  let revealedLen = 0;       // 当前已显示到第几个字符（节流打字用）
+  let revealTimer = null;    // 打字定时器
+  let revealIncoming = false; // 是否还有token在路上
+  let finalData = null;
+
+  const ensureStreamEl = () => {
+    if (!streamEl || !document.getElementById('streamMsg')) {
+      streamEl = document.createElement('div');
+      streamEl.className = 'msg assistant';
+      streamEl.id = 'streamMsg';
+      streamEl.innerHTML = '<div class="avatar">🤖</div><div class="bubble" id="streamBubble"></div>';
+      chat.appendChild(streamEl);
+    }
+    return streamEl;
+  };
+
+  const renderStream = () => {
+    const bubble = document.getElementById('streamBubble');
+    if (!bubble) return;
+    const shown = answerBuf.slice(0, revealedLen);
+    bubble.innerHTML = shown
+      ? renderMarkdown(shown) + '<span style="opacity:.5;">▍</span>'
+      : '<div class="typing"><span></span><span></span><span></span></div>';
+    chat.scrollTop = chat.scrollHeight;
+  };
+
+  // 自适应节流显示：短回答慢打（看得见打字），长回答限时打完（不拖沓）
+  // 目标时长：至少 1.2s，按 90字符/s 推进，封顶 5s
+  const startReveal = () => {
+    if (revealTimer) return;
+    const t0 = Date.now();
+    revealTimer = setInterval(() => {
+      const len = answerBuf.length;
+      const targetDur = Math.max(1.2, Math.min(len / 90, 5)); // 秒
+      const elapsed = Date.now() - t0;
+      revealedLen = Math.max(1, Math.min(len, Math.floor(len * elapsed / (targetDur * 1000))));
+      renderStream();
+      if (revealedLen >= len && !revealIncoming) {  // 流已结束且打完了
+        clearInterval(revealTimer);
+        revealTimer = null;
+      }
+    }, 30);
+  };
+
+  const stopReveal = () => {
+    if (revealTimer) { clearInterval(revealTimer); revealTimer = null; }
+  };
+
+  const cleanupStream = () => {
+    stopReveal();
+    if (streamEl && document.getElementById('streamMsg')) streamEl.remove();
+  };
+
+  // 等待打字播完（最多等它自然结束），让用户看到完整打字过程
+  const waitRevealFinish = () => new Promise((res) => {
+    const check = () => {
+      if (revealedLen >= answerBuf.length || !document.getElementById('streamMsg')) return res();
+      setTimeout(check, 40);
+    };
+    check();
+  });
+
+  try {
+    const res = await fetch('/api/query/stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: query}),
+    });
+    if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      // 按 SSE 事件边界（\n\n）切分解析
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, idx + 2);
+        buffer = buffer.slice(idx + 2);
+        let event = 'message', dataLines = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) continue;
+        const data = JSON.parse(dataLines.join('\n'));
+
+        if (event === 'status') {
+          updateLoading(data.message);                 // 阶段进度
+        } else if (event === 'answer') {
+          removeLoading();                              // 隐藏加载，开始打字
+          ensureStreamEl();
+          answerBuf += data.delta;
+          revealIncoming = true;                        // 还有token在路上
+          startReveal();
+          renderStream();
+        } else if (event === 'result') {
+          finalData = data;
+        } else if (event === 'error') {
+          throw new Error(data.message);
+        }
+      }
+    }
+
+    // 流已结束：标记没有更多token，等待打字播完再收尾
+    revealIncoming = false;
+    if (answerBuf) await waitRevealFinish();
+    stopReveal();
+    removeLoading();
+    cleanupStream();
+
+    if (finalData) {
+      if (finalData.sql || finalData.chart) {
+        // 结构化结果（SQL/数据/图表）用完整卡片
+        addMessage('assistant', formatResponse(finalData, query));
+      } else {
+        // 纯文本回复（聊天/知识/竞品）：保留已打字的回答，避免被卡片替换
+        const text = answerBuf || finalData.chat_reply || '';
+        addMessage('assistant', text ? renderMarkdown(text) : formatResponse(finalData, query));
+      }
+    } else if (answerBuf) {
+      // 纯聊天/知识回答
+      addMessage('assistant', renderMarkdown(answerBuf));
+    } else {
+      addMessage('assistant', '<p>✅ 查询完成，但没有返回数据。</p>');
+    }
+  } catch(e) {
+    stopReveal();
+    removeLoading();
+    cleanupStream();
+    addMessage('assistant', '❌ 请求失败: ' + e.message);
+  }
+}
+
+function sendExample(text) {
+  document.getElementById('input').value = text;
+  sendMessage(text);
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// ==================== Format Response ====================
+function formatResponse(data, question) {
+  let html = '';
+
+  // Chat / Knowledge mode
+  if (data.chat_reply && !data.sql && !data.clarification_needed) {
+    html += renderMarkdown(data.chat_reply);
+    return html;
+  }
+
+  // Clarification needed
+  if (data.clarification_needed) {
+    html += '<p>' + (data.chat_reply || '🤔 让我帮你想一下...') + '</p>';
+    if (data.follow_up_questions && data.follow_up_questions.length) {
+      html += '<div style="margin-top:8px;">';
+      for (const q of data.follow_up_questions) {
+        html += '<span class="example" style="margin:2px;display:inline-block;" onclick="sendExample(\'' + q.replace(/'/g, "\\'") + '\')">' + q + '</span>';
+      }
+      html += '</div>';
+    }
+    return html;
+  }
+
+  // Error
+  if (data.error) {
+    html += '<p style="color:var(--error);">❌ ' + data.error + '</p>';
+    if (data.warnings && data.warnings.length) {
+      html += '<p style="font-size:12px;color:var(--warning);">⚠️ 重试了' + data.retry_count + '次</p>';
+    }
+    return html;
+  }
+
+  // SQL result
+  if (data.sql) {
+    // 自然语言摘要（口语化回答）
+    const answer = data.nl_answer || '';
+    if (answer) {
+      html += '<div style="font-size:14px;line-height:1.8;margin-bottom:10px;">' + answer + '</div>';
+    }
+
+    // 展开按钮行
+    const uid = 'tgl_' + Date.now();
+    const hasChart = data.chart && data.chart.echarts_option;
+    const hasData = data.data && data.data.length > 0;
+    html += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">';
+    html += '<button class="toggle-btn" onclick="toggleSection(\'' + uid + '_sql\')">📋 SQL</button>';
+    if (hasChart) html += '<button class="toggle-btn" onclick="toggleSection(\'' + uid + '_chart\')">📊 图表</button>';
+    if (hasData) html += '<button class="toggle-btn" onclick="toggleSection(\'' + uid + '_data\')">📄 数据 (' + (data.row_count||0) + '行)</button>';
+    html += '</div>';
+
+    // SQL (collapsed)
+    html += '<div id="' + uid + '_sql" class="toggle-section">';
+    html += '<div class="sql-block"><div class="sql-header"><span>SQL</span><span style="font-size:10px;">' + (data.row_count||0) + ' 行 · ' + (data.execution_time_ms||0).toFixed(0) + 'ms</span></div><pre><code>' + escapeHtml(data.sql) + '</code></pre></div>';
+    if (data.warnings && data.warnings.length) {
+      for (const w of data.warnings) html += '<p style="font-size:12px;color:var(--warning);">⚠️ ' + w + '</p>';
+    }
+    html += '</div>';
+
+    // Chart (collapsed, lazy render)
+    if (hasChart) {
+      const chartId = 'chart_' + uid;
+      html += '<div id="' + uid + '_chart" class="toggle-section"><div class="chart-wrap" id="' + chartId + '"></div></div>';
+      setTimeout(() => {
+        const section = document.getElementById(uid + '_chart');
+        if (section && data.chart && data.chart.echarts_option) {
+          // Lazy render: only when user expands
+          const orig = section.style.display;
+          section.style.display = 'block';
+          const dom = document.getElementById(chartId);
+          if (dom) { const inst = echarts.init(dom); inst.setOption(data.chart.echarts_option); }
+          section.style.display = orig;
+        }
+      }, 200);
+    }
+
+    // Data table (collapsed)
+    if (hasData) {
+      html += '<div id="' + uid + '_data" class="toggle-section">';
+      html += '<div class="table-wrap"><table class="data-table"><thead><tr>';
+      for (const col of (data.columns||[])) html += '<th>' + col + '</th>';
+      html += '</tr></thead><tbody>';
+      for (const row of (data.data||[]).slice(0, 20)) {
+        html += '<tr>';
+        for (const col of (data.columns||[])) {
+          const val = row[col];
+          html += '<td>' + (val !== null && val !== undefined ? String(val) : '-') + '</td>';
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table></div></div>';
+    }
+
+    // AI analysis text (shown directly, not collapsed)
+    if (data.analysis_text) {
+      html += '<div style="margin-top:8px;padding:10px;background:var(--bg);border-radius:8px;font-size:13px;">' + renderMarkdown(data.analysis_text) + '</div>';
+    }
+  }
+
+  return html || '<p>✅ 查询完成，但没有返回数据。</p>';
+}
+
+// ==================== Quick Panel (Left Sidebar) ====================
+function toggleQuickPanel() {
+  const sidebar = document.getElementById('sidebar');
+  const tab = document.getElementById('quickTab');
+  sidebar.classList.toggle('expanded');
+  tab.classList.toggle('active');
+}
+
+function hideQuickPanel() {
+  const sidebar = document.getElementById('sidebar');
+  const tab = document.getElementById('quickTab');
+  sidebar.classList.remove('expanded');
+  tab.classList.remove('active');
+}
+
+// Close sidebar when clicking outside on the main content area
+document.querySelector('.main-wrap').addEventListener('click', e => {
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar.classList.contains('expanded')) {
+    hideQuickPanel();
+  }
+});
+
+// ==================== Quick Actions ====================
+function hideQuickPanel() {
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) sidebar.classList.remove('expanded');
+}
+
+async function runQuickCard(key, label) {
+  hideQuickPanel();
+  addMessage('user', label);
+  addLoading();
+  try {
+    const res = await fetch('/api/quick/' + key, {method:'POST'});
+    const data = await res.json();
+    removeLoading();
+    addMessage('assistant', formatResponse({
+      sql: data.sql, sql_explanation: label, data: data.data, columns: data.columns,
+      row_count: data.row_count, chart: data.chart, execution_time_ms: data.execution_time_ms,
+      warnings: data.warnings, error: data.error, analysis_text: '', schema_tables: [],
+    }, label));
+  } catch(e) {
+    removeLoading();
+    addMessage('assistant', '❌ 查询失败: ' + e.message);
+  }
+}
+
+async function runQuickAction(type) {
+  hideQuickPanel();
+  // 竞品分析特殊处理
+  if (type === 'competitor') {
+    addMessage('user', '🔍 竞品分析');
+    addLoading();
+    try {
+      const res = await fetch('/api/competitor/list');
+      const data = await res.json();
+      const names = (data.competitors||[]).filter(c=>c.has_data).map(c=>c.name);
+      removeLoading();
+      addMessage('assistant', '📊 可分析的竞品: ' + names.join('、') + '。\\n\\n请直接在输入框输入竞品名称（如"分析安克创新"）开始分析。');
+    } catch(e) { removeLoading(); addMessage('assistant', '❌ 获取竞品列表失败'); }
+    return;
+  }
+  const labels = {anomalies:'异常检测',trends:'趋势预警',daily_report:'运营日报'};
+  const urls = {anomalies:'/api/bi/anomalies',trends:'/api/bi/trends',daily_report:'/api/bi/daily_report'};
+  const label = labels[type];
+  addMessage('user', label);
+  addLoading();
+  try {
+    const res = await fetch(urls[type], {method: type==='daily_report'?'POST':'GET'});
+    const data = await res.json();
+    removeLoading();
+    let content = renderBIResult(type, data);
+    addMessage('assistant', content);
+  } catch(e) {
+    removeLoading();
+    addMessage('assistant', '❌ 分析失败: ' + e.message);
+  }
+}
+
+function renderBIResult(type, data) {
+  if (type === 'anomalies') {
+    let h = '<h3>🚨 异常检测</h3><p style="font-size:12px;color:var(--text-muted);">共' + (data.total||0) + '项</p>';
+    for (const a of (data.items||[])) {
+      const sev = {high:'#f85149',medium:'#d2991d',low:'#58a6ff'}[a.severity]||'#8b949e';
+      h += '<div style="margin:6px 0;padding:8px;background:var(--bg);border-radius:6px;border-left:3px solid ' + sev + ';"><b>' + escapeHtml(a.title) + '</b><br><span style="font-size:12px;color:var(--text-muted);">' + escapeHtml(a.detail) + '</span><br><span style="font-size:11px;">💡 ' + escapeHtml(a.suggestion) + '</span></div>';
+    }
+    if (!(data.items||[]).length) h += '<p style="color:var(--success);">✅ 系统正常</p>';
+    return h;
+  }
+  if (type === 'trends') {
+    let h = '<h3>📉 趋势预警</h3><p>' + escapeHtml(data.summary||'') + '</p>';
+    for (const t of (data.items||[])) {
+      h += '<div style="margin:4px 0;font-size:13px;"><b>' + escapeHtml(t.product) + '</b> 本月¥' + (t.this_month||0).toLocaleString() + ' vs 上月¥' + (t.last_month||0).toLocaleString() + ' <span style="color:var(--error);">↓' + Math.abs(t.change_pct||0) + '%</span></div>';
+    }
+    return h;
+  }
+  if (type === 'daily_report') {
+    let h = '<h3>📋 运营日报 (' + (data.date||'') + ')</h3>';
+    h += '<div style="display:flex;gap:16px;margin:8px 0;">';
+    h += '<div><span style="font-size:10px;color:var(--text-muted);">销售额</span><br><b style="font-size:18px;color:var(--accent);">¥' + ((data.metrics||{}).sales||0).toLocaleString() + '</b></div>';
+    h += '<div><span style="font-size:10px;color:var(--text-muted);">订单</span><br><b style="font-size:18px;">' + ((data.metrics||{}).orders||0) + '</b></div>';
+    h += '</div>';
+    if (data.summary) h += '<p>' + renderMarkdown(data.summary) + '</p>';
+    return h;
+  }
+  return JSON.stringify(data);
+}
+
+// ==================== Competitor ====================
+function quickCompetitor(name) {
+  hideQuickPanel();
+  document.getElementById('input').value = '分析一下' + name;
+  sendMessage('分析一下' + name);
+}
+
+function openCompetitorInput() {
+  hideQuickPanel();
+  const name = prompt('请输入竞品公司名称：', '');
+  if (name && name.trim()) {
+    document.getElementById('input').value = '分析一下' + name.trim();
+    sendMessage('分析一下' + name.trim());
+  }
+}
+
+// ==================== Toggle Sections ====================
+function toggleSection(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('show');
+}
+
+// ==================== Helpers ====================
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderMarkdown(md) {
+  if (!md) return '';
+  let html = escapeHtml(md);
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  // Bold & italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // Lists
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>)/gs, (m) => '<ul>' + m + '</ul>');
+  // Tables
+  html = html.replace(/^\|(.+)\|$/gm, (line) => {
+    if (line.includes('---')) return '';
+    const cells = line.split('|').filter(c => c.trim()).map(c => '<td>' + c.trim() + '</td>');
+    return '<tr>' + cells.join('') + '</tr>';
+  });
+  html = html.replace(/(<tr>.*?<\/tr>\s*)+/gs, '<table>$&</table>');
+  // Line breaks
+  html = html.replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
+  return html;
+}
+
+// ==================== Init ====================
+document.addEventListener('DOMContentLoaded', () => {
+  buildQuickCards();
+  document.getElementById('input').focus();
+});
+</script>
+</body>
+</html>

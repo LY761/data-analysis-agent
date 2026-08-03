@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 运行时产物
+chroma_db/
+*.db
+demo_sales.db
+
+# 密钥（绝不提交）
+.env
+.env.local
+*.key
+
+# SDD 工作区（git-ignored scratch）
+.superpowers/
+
+# 日志
+*.log
+
+# 临时测试文件
+_test_*.py
