@@ -15,3 +15,15 @@ def test_product_keyword_routes():
     r = agent_router.route("研究一下 Soundcore P40i")
     assert r["mode"] == "market_intelligence"
     assert r["sub"] == "product"
+
+
+def test_knowledge_not_hijacked_by_market():
+    # 知识类词优先于市场情报（"什么是"命中知识检查 step 4，先于市场情报返回）
+    r = agent_router.route("什么是选品机会")
+    assert r["mode"] != "market_intelligence"
+
+
+def test_sql_not_hijacked_by_market():
+    # 内部数据指标词命中 DATA_OVERRIDE，跳过市场情报，落入 sql_query
+    r = agent_router.route("研究一下上个月的销售额")
+    assert r["mode"] != "market_intelligence"

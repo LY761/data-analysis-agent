@@ -115,6 +115,10 @@ class AgentRouter:
     MARKET_INTEL_KEYWORDS = ["选品", "市场机会", "能不能做", "值得卖吗",
                              "研究一下", "分析一下这个产品", "差评", "痛点"]
     SELECTION_KEYWORDS = ["选品", "市场机会", "能不能做", "值得卖吗", "竞争怎么样"]
+    # 明确的内部数据指标词：命中则视为数据查询，不走进市场情报
+    DATA_OVERRIDE_KEYWORDS = ["上个月", "本月", "这个月", "上月", "最近", "昨天", "今天",
+                              "今年", "去年", "环比", "同比", "销售额", "销量", "订单数",
+                              "订单量", "库存"]
 
     def route(self, user_message: str, conversation_history: list = None) -> dict:
         """
@@ -151,16 +155,17 @@ class AgentRouter:
                 self.cache[msg] = r
                 return r
 
-        # 3.5 市场情报（选品/商品研究）
-        if any(kw in msg for kw in self.MARKET_INTEL_KEYWORDS):
+        # 4. 知识/概念类问题 → 交给LLM回答（先于SQL规则，避免误判成查数据）
+        if any(kw in msg for kw in self.KNOWLEDGE_KEYWORDS):
+            return self._llm_route(msg, conversation_history)
+
+        # 3.5 市场情报（选品/商品研究）—— 先于SQL，但数据查询优先
+        if any(kw in msg for kw in self.MARKET_INTEL_KEYWORDS) \
+                and not any(k in msg for k in self.DATA_OVERRIDE_KEYWORDS):
             sub = "selection" if any(kw in msg for kw in self.SELECTION_KEYWORDS) else "product"
             r = {"mode": "market_intelligence", "sub": sub, "query": msg, "reason": "市场情报关键词"}
             self.cache[msg] = r
             return r
-
-        # 4. 知识/概念类问题 → 交给LLM回答（先于SQL规则，避免误判成查数据）
-        if any(kw in msg for kw in self.KNOWLEDGE_KEYWORDS):
-            return self._llm_route(msg, conversation_history)
 
         # 5. 数据分析类问题快筛（命中直接走SQL流水线，不调LLM）
         if len(msg) >= 4 and any(kw in msg for kw in self.SQL_QUERY_KEYWORDS):
