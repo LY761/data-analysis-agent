@@ -53,11 +53,13 @@ def analyze_product(query: str, llm_client=None, stream_cb=None) -> dict:
         pains = _call_llm(client, [
             {"role": "system", "content": "你是用户反馈分析师。"},
             {"role": "user", "content": prompts.REVIEW_PAIN_PROMPT.format(
-                reviews=json.dumps([{"title": product["title"], **product}], ensure_ascii=False))},
+                reviews=json.dumps(
+                    [{"note": "评论正文未抓取，以下为产品元数据",
+                      "title": product["title"], **product}], ensure_ascii=False))},
         ])
 
         progress("正在对比内部产品并给建议...")
-        internal = _compare_internal(product["title"][:6])
+        internal = _compare_internal(product["title"])
         suggestions = _call_llm(client, [
             {"role": "system", "content": "你是产品经理。"},
             {"role": "user", "content": prompts.SUGGEST_PROMPT.format(
