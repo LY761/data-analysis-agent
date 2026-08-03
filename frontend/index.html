@@ -260,6 +260,15 @@ body {
   <div id="quickCardsBody" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
 </div>
 
+<div style="padding: 0 20px 8px; display:flex; gap:8px; flex-wrap:wrap;">
+  <button class="quick-card" style="flex:none;padding:8px 14px;flex-direction:row;gap:6px;"
+          onclick="openMarketSelection()">🔍 选品分析</button>
+  <button class="quick-card" style="flex:none;padding:8px 14px;flex-direction:row;gap:6px;"
+          onclick="openMarketProduct()">📦 商品研究</button>
+  <button class="quick-card" style="flex:none;padding:8px 14px;flex-direction:row;gap:6px;"
+          onclick="runQuickAction('competitor')">🆚 竞品分析</button>
+</div>
+
 <div class="input-area">
   <div class="input-row" id="inputRow">
     <textarea id="input" rows="1" placeholder="问数据问题，或输入竞品名称进行分析..." onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
