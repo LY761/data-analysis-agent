@@ -437,7 +437,10 @@ async function sendMessage(text) {
 
   try {
     // 市场情报关键词 → /api/market/stream，否则走普通查询流
-    const isMarket = /选品|市场机会|研究一下|能不能做|值得卖吗|差评|痛点/.test(query);
+    // 命中知识/数据词（什么是、上个月/销售额/成本/利润 等 DATA_OVERRIDE 词）→ 走普通查询流，
+    // 避免 "什么是选品"/"上个月的选品销量" 误投到 market_stream 成死端。
+    const isMarket = /选品|市场机会|研究一下|能不能做|值得卖吗|差评|痛点|分析一下这个产品|竞争怎么样/.test(query)
+      && !/什么是|上个月|本月|这个月|上月|最近|昨天|今天|今年|去年|环比|同比|销售额|销量|订单数|订单量|库存|成本|利润|毛利|收入|客户|会员|评价|投诉/.test(query);
     const url = isMarket ? '/api/market/stream' : '/api/query/stream';
     const res = await fetch(url, {
       method: 'POST',
@@ -574,8 +577,15 @@ function formatResponse(data, question) {
       + '<p>评分：' + escapeHtml(rec.score ?? '-') + '/100 · ' + escapeHtml(rec.verdict || '') + '</p>'
       + '<p>建议价格带：' + escapeHtml(rec.price_band || '-') + '</p>'
       + '<p>竞争强度：' + escapeHtml(rec.competition || '-') + '</p>'
-      + '<p>' + escapeHtml(rec.reasoning || data.profile || '') + '</p>'
-      + '</div>';
+      + '<p>' + escapeHtml(rec.reasoning || '') + '</p>';
+    if (rec.differentiation) html += '<p><strong>🎯 差异化方向：</strong>' + escapeHtml(rec.differentiation) + '</p>';
+    if (Array.isArray(rec.risks) && rec.risks.length) {
+      html += '<p><strong>⚠️ 主要风险：</strong></p><ul style="margin:4px 0 8px 18px;padding-left:0;">'
+        + rec.risks.map(r => '<li>' + escapeHtml(r || '') + '</li>').join('')
+        + '</ul>';
+    }
+    if (data.profile) html += '<p style="margin-top:6px;padding:8px;background:var(--bg);border-radius:8px;font-size:13px;"><strong>📋 品类画像：</strong><br>' + escapeHtml(data.profile).replace(/\n/g,'<br>') + '</p>';
+    html += '</div>';
     if (data.products && data.products.length) {
       html += '<button class="toggle-btn" onclick="toggleSection(\'' + mk_uid + '\')">📄 产品数据 (' + data.products.length + '个)</button>';
       html += '<div id="' + mk_uid + '" class="toggle-section"><table style="width:100%;border-collapse:collapse;">'

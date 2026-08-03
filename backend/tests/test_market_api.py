@@ -48,3 +48,20 @@ def test_market_stream_endpoint():
     assert "event: done" in r.text
     # _run_market 走 asyncio.to_thread(analyze_selection, query, None, stream_cb)
     m.assert_called_once_with("蓝牙耳机", None, ANY)
+
+
+def test_market_stream_non_market_mode_falls_back_to_selection():
+    """非市场模式不再死端：直接跑选品兜底，仍有 result/done 事件"""
+    fake_result = {"category": "蓝牙耳机", "products": [], "profile": "分析…",
+                   "internal": [], "recommendation": {"score": 70, "verdict": "推荐"},
+                   "error": None}
+    with patch("agent.agent_router.agent_router.route",
+               return_value={"mode": "sql_query", "rewritten": "蓝牙耳机"}):
+        with patch("agent.market_intelligence.selection.analyze_selection",
+                   return_value=fake_result) as m:
+            r = client.post("/api/market/stream", json={"query": "蓝牙耳机"})
+    assert r.status_code == 200
+    assert "event: result" in r.text
+    assert "event: done" in r.text
+    # 兜底：sub=selection，query=原始 request.query
+    m.assert_called_once_with("蓝牙耳机", None, ANY)

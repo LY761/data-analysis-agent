@@ -27,8 +27,10 @@ def _default_client():
 def _compare_internal(category: str) -> list:
     """查内部数据库是否有相似产品（按品类关键词模糊匹配）"""
     try:
-        # 撇号转义：避免 "women's" 这类词截断后（women'）破坏 SQL 语法
-        kw = category[:6].replace("'", "''")
+        # 纵深防御：参数化 SQL 改造前，先把关键词净化成「中文字母数字+空格」，
+        # 剔除撇号/引号/分号等，避免截断词（如 women'）或恶意输入破坏 LIKE 拼接的语法。
+        # 净化后撇号已无，原有的 '' 双写转义不再需要。
+        kw = re.sub(r"[^\w一-鿿 ]", "", category)[:6]
         r = executor.execute(
             f"SELECT product_name, category, unit_price FROM products "
             f"WHERE is_active=1 AND (category LIKE '%{kw}%' "

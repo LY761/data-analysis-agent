@@ -27,3 +27,17 @@ def test_sql_not_hijacked_by_market():
     # 内部数据指标词命中 DATA_OVERRIDE，跳过市场情报，落入 sql_query
     r = agent_router.route("研究一下上个月的销售额")
     assert r["mode"] != "market_intelligence"
+
+
+def test_competition_keyword_independently_triggers_market():
+    # "竞争怎么样" 既在 SELECTION 也在 MARKET_INTEL，能独立触发市场 → 选品
+    r = agent_router.route("蓝牙耳机竞争怎么样")
+    assert r["mode"] == "market_intelligence"
+    assert r["sub"] == "selection"
+
+
+def test_cost_data_word_overrides_market():
+    # DATA_OVERRIDE 新增的成本词，让 "研究一下我们的成本" 落入 sql_query
+    r = agent_router.route("研究一下我们的成本")
+    assert r["mode"] != "market_intelligence"
+    assert r["mode"] == "sql_query"

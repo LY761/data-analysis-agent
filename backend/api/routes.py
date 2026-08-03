@@ -1080,9 +1080,11 @@ async def market_stream(request: MarketProductRequest):
         query = route.get("query", request.query)
 
         if mode != "market_intelligence":
-            yield sse("status", {"message": "未识别为市场情报请求"})
-            yield sse("done", {})
-            return
+            # 尽力而为兜底：前端既然投到 market 端点，意图是市场分析 →
+            # 直接跑选品，不再"未识别"后死端无结果。保留下方 error 事件处理。
+            sub = "selection"
+            query = request.query
+            yield sse("status", {"message": "按选品分析处理..."})
 
         task = asyncio.create_task(_run_market(sub, query, stream_cb))
         try:
