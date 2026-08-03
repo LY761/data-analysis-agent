@@ -66,6 +66,17 @@ app.add_middleware(AuthMiddleware)
 
 app.include_router(router, prefix="/api")
 
+
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    """HTML/前端静态文件禁用缓存，避免改了代码但浏览器还显示旧页面"""
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/", "/index.html") or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
+
+
 frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 if os.path.exists(frontend_dir):
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
