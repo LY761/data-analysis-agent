@@ -49,13 +49,22 @@ def analyze_product(query: str, llm_client=None, stream_cb=None) -> dict:
                 title=product["title"], description=json.dumps(product, ensure_ascii=False))},
         ])
 
-        progress("正在分析评论痛点...")
+        # 找本地真实评论（competitor-scraper 爬好的）；有则用真实评论，无则降级元数据推断
+        from agent.market_intelligence.reviews import get_reviews_for_asin, extract_asin
+        asin = extract_asin(product.get("url", ""))
+        local_reviews = get_reviews_for_asin(asin)
+
+        progress(f"正在分析评论痛点{'（真实评论 ' + str(len(local_reviews)) + ' 条）' if local_reviews else '（无本地评论，基于元数据推断）'}...")
+        review_data = (
+            [{"asin": asin, **r} for r in local_reviews]
+            if local_reviews
+            else [{"note": "评论正文未抓取，以下为产品元数据",
+                   "title": product["title"], **product}]
+        )
         pains = _call_llm(client, [
             {"role": "system", "content": "你是用户反馈分析师。"},
             {"role": "user", "content": prompts.REVIEW_PAIN_PROMPT.format(
-                reviews=json.dumps(
-                    [{"note": "评论正文未抓取，以下为产品元数据",
-                      "title": product["title"], **product}], ensure_ascii=False))},
+                reviews=json.dumps(review_data, ensure_ascii=False))},
         ])
 
         progress("正在对比内部产品并给建议...")
