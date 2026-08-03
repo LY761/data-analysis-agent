@@ -1038,14 +1038,16 @@ class MarketProductRequest(BaseModel):
 
 
 @router.post("/market/selection")
-async def market_selection(request: MarketSelectionRequest):
+def market_selection(request: MarketSelectionRequest):
+    # 普通 def：FastAPI 自动丢线程池，避免网络爬取+LLM 的阻塞调用卡住事件循环
     from agent.market_intelligence.selection import analyze_selection
     result = analyze_selection(request.category)
     return result
 
 
 @router.post("/market/product")
-async def market_product(request: MarketProductRequest):
+def market_product(request: MarketProductRequest):
+    # 普通 def：FastAPI 自动丢线程池，避免网络爬取+LLM 的阻塞调用卡住事件循环
     from agent.market_intelligence.product_analyzer import analyze_product
     result = analyze_product(request.query)
     return result
@@ -1083,26 +1085,30 @@ async def market_stream(request: MarketProductRequest):
             return
 
         task = asyncio.create_task(_run_market(sub, query, stream_cb))
+        try:
+            while True:
+                async for ev in forward():
+                    yield ev
+                if task.done():
+                    break
+                await asyncio.sleep(0.03)
 
-        while True:
             async for ev in forward():
                 yield ev
-            if task.done():
-                break
-            await asyncio.sleep(0.03)
 
-        async for ev in forward():
-            yield ev
+            try:
+                result = task.result()
+            except Exception as e:
+                yield sse("error", {"message": str(e)})
+                yield sse("done", {})
+                return
 
-        try:
-            result = task.result()
-        except Exception as e:
-            yield sse("error", {"message": str(e)})
+            yield sse("result", result)
             yield sse("done", {})
-            return
-
-        yield sse("result", result)
-        yield sse("done", {})
+        finally:
+            # 客户端断开 → generator 被 abort，取消后台分析任务，避免白跑浪费 LLM/爬取
+            if not task.done():
+                task.cancel()
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
