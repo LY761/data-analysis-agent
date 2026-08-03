@@ -1071,3 +1071,19 @@ git commit -m "feat: 前端市场情报 Tab + 流式渲染"
 **已知偏离：** 按用户要求改为**共享爬虫** `agent/crawler.py`（httpx+BS4 自实现，不 import competitor-scraper），竞品分析与选品共用。competitor_analysis 现仍读预抓取文件，接入共享爬虫为后续任务。
 
 **已知注意事项：** `"竞品分析"` 会被现有 `COMPETITOR_KEYWORDS` 先拦截，市场情报路由需避开该词；Task 7 已说明。
+
+---
+
+## 执行后附录：Deferred Minor（最终审查已 triage，均不阻塞合并）
+
+**MVP 已知限制（用户须知）**
+- 商品研究「评论痛点」基于产品元数据 + LLM 诚实降级（prompts 已标注"无评论数据，以下为推断"），MVP 不抓真实评论；后续加评论抓取才能做真实评论洞察。
+- 真实外网抓取未在本机验证（DDG 不可达）；部署环境有外网时建议实测 `search_products("bluetooth earbuds")`。Amazon 对裸 httpx UA 可能回 CAPTCHA，产品数据可能为空，建议验收时实测 1-2 个真实产品页。
+- 测试需 `PYTHONIOENCODING=utf-8`（main.py print 含 emoji，GBK 控制台会挂）；`import main` 会启 schema_watcher 后台线程。
+
+**后续优化建议（不阻塞）**
+- 路由：扩大 `DATA_OVERRIDE` / `KNOWLEDGE_KEYWORDS` 覆盖（"是什么"）；前端 isMarket 正则与后端保持同步。
+- 安全纵深：`_compare_internal` 改参数化 SQL；前端 error 分支 `data.error` 转义。
+- 测试：stream 补 product/error 分支；search 补 params/异常路径断言；test_router_market 避免触发真实 LLM。
+- 小重构：`_default_client` 去重；product_analyzer 跨模块私有 import；`scraped[:15]` 死代码；`_run_market` 冗余 import；hideQuickPanel 重复定义；crawler 双重加小数改 elif。
+- 爬虫可用性：Amazon 页可能需要 stealth/API 才能稳定抓取。
