@@ -42,10 +42,15 @@ def _ensure_table():
             sql TEXT,
             result_summary TEXT,
             template_hash TEXT,
+            topic_id TEXT,
             created_at REAL NOT NULL,
             UNIQUE(session_id, turn_index)
         )
     """)
+    # 迁移：老库缺 topic_id 列 → 补上，不丢历史
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(conversation_history)")}
+    if "topic_id" not in cols:
+        conn.execute("ALTER TABLE conversation_history ADD COLUMN topic_id TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_session ON conversation_history(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_hash ON conversation_history(template_hash)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_time ON conversation_history(created_at)")
@@ -94,6 +99,7 @@ class ConversationMemory:
                     "question": row["question"],
                     "sql": row["sql"] or "",
                     "result_summary": json.loads(row["result_summary"]) if row["result_summary"] else {},
+                    "topic_id": row["topic_id"] or "",
                     "timestamp": row["created_at"],
                 }
                 self.turns.append(turn)
@@ -111,18 +117,19 @@ class ConversationMemory:
         except Exception as e:
             logger.warning(f"[Memory] 加载历史失败: {e}")
 
-    def _save_turn(self, turn_index: int, question: str, sql: str, summary: dict, template_hash: str):
+    def _save_turn(self, turn_index: int, question: str, sql: str, summary: dict,
+                   template_hash: str, topic_id: str = ""):
         """持久化一轮对话到SQLite"""
         _ensure_table()
         try:
             conn = sqlite3.connect(DEMO_DB_PATH)
             conn.execute(
                 """INSERT OR REPLACE INTO conversation_history
-                   (session_id, turn_index, question, sql, result_summary, template_hash, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (session_id, turn_index, question, sql, result_summary, template_hash, topic_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (self.session_id, turn_index, question[:500], sql,
                  json.dumps(summary, ensure_ascii=False) if summary else None,
-                 template_hash, time.time())
+                 template_hash, topic_id, time.time())
             )
             conn.commit()
             conn.close()
@@ -133,11 +140,12 @@ class ConversationMemory:
     # 对话操作
     # ═══════════════════════════════════════════
 
-    def add_turn(self, question: str, sql: str, result_summary: dict = None):
+    def add_turn(self, question: str, sql: str, result_summary: dict = None, topic_id: str = ""):
         turn = {
             "question": question,
             "sql": sql,
             "result_summary": result_summary or {},
+            "topic_id": topic_id or "",
             "timestamp": time.time(),
         }
         self.turns.append(turn)
@@ -154,7 +162,7 @@ class ConversationMemory:
 
         # 持久化
         turn_index = len(self.turns) - 1 if self.turns else 0
-        self._save_turn(turn_index, question, sql, result_summary, th)
+        self._save_turn(turn_index, question, sql, result_summary, th, topic_id)
 
     def build_context(self, max_turns: int = 3) -> str:
         """构建对话上下文 Prompt"""
@@ -168,6 +176,100 @@ class ConversationMemory:
             if turn.get("sql"):
                 parts.append(f"SQL{idx}: {turn['sql'][:100]}")
         return "\n".join(parts)
+
+    # ═══════════════════════════════════════════
+    # 话题自适应上下文（同话题稳定、换话题发散）
+    # ═══════════════════════════════════════════
+
+    _TOPIC_OVERLAP_THRESHOLD = 0.3
+
+    @staticmethod
+    def _bigrams(text: str) -> set:
+        """中文 bigram 切词（去单字，避免'按/的'等噪声匹配）"""
+        return {text[i:i + 2] for i in range(max(0, len(text) - 1))}
+
+    @staticmethod
+    def _keyword_overlap(a: str, b: str) -> float:
+        """两段文本的 bigram 重叠比例（交集 / 较短者长度）"""
+        ta, tb = ConversationMemory._bigrams(a), ConversationMemory._bigrams(b)
+        if not ta or not tb:
+            return 0.0
+        return len(ta & tb) / min(len(ta), len(tb))
+
+    @staticmethod
+    def _sql_table_names(sql: str) -> set:
+        """粗略提取 SQL 引用的表名（FROM/JOIN 后首个标识符）"""
+        if not sql:
+            return set()
+        return set(re.findall(r'\b(?:from|join)\s+([A-Za-z_]\w*)', sql, re.IGNORECASE))
+
+    def get_last_topic_id(self) -> str:
+        """返回最近一轮的 LLM 语义话题标签；无则空串"""
+        return (self.turns[-1].get("topic_id") or "") if self.turns else ""
+
+    def get_topic_context(self, current_question: str, topic_id: str = "", max_turns: int = 10) -> tuple:
+        """从最近一轮往回回溯同一话题的轮次。
+
+        返回 (turns, anchor)：
+          turns —— 话题内轮次（按时间正序）
+          anchor —— 该话题起始（最早）一轮的完整问题，用于稳定检索
+
+        优先用 LLM 语义 topic_id 精确分组（同话题同标签，正解）；
+        无 topic_id 时退回启发式（规则快路径/旧轮次）：
+          · 当前轮→最近一轮：detect_incremental 命中（"再按月份"），或关键词重叠 ≥ 阈值
+          · 相邻已存轮之间：关键词重叠 ≥ 阈值，或两者 SQL 引用了同一批表
+        不满足 → 话题已切换，返回空段（anchor=当前问题），让检索自然发散。
+        """
+        # ── 正解：LLM 语义 topic_id 精确分组 ──
+        if topic_id:
+            matches = [t for t in self.turns if (t.get("topic_id") or "") == topic_id]
+            if matches:
+                anchor = (matches[0].get("question") or "").strip() or current_question
+                return matches[-max_turns:], anchor
+            return [], current_question
+        # ── 兜底：启发式 ──
+        if not self.turns:
+            return [], current_question
+        segment = []
+        prev_q = current_question
+        prev_sql = ""
+        for turn in reversed(self.turns):
+            q = (turn.get("question") or "").strip()
+            sql = turn.get("sql") or ""
+            if not q:
+                continue
+            if not segment:
+                if not (self.detect_incremental(current_question)
+                        or self._keyword_overlap(current_question, q) >= self._TOPIC_OVERLAP_THRESHOLD):
+                    return [], current_question
+            else:
+                if not (self._keyword_overlap(prev_q, q) >= self._TOPIC_OVERLAP_THRESHOLD
+                        or bool(self._sql_table_names(prev_sql) & self._sql_table_names(sql))):
+                    break
+            segment.append(turn)
+            prev_q = q
+            prev_sql = sql
+            if len(segment) >= max_turns:
+                break
+        if not segment:
+            return [], current_question
+        anchor = (segment[-1].get("question") or "").strip() or current_question
+        segment.reverse()
+        return segment, anchor
+
+    def build_topic_context(self, current_question: str, topic_id: str = "", max_turns: int = 10) -> tuple:
+        """构建话题上下文 Prompt 文本 + 话题锚，供工作流使用。
+
+        返回 (text, anchor)；text 为空表示全新话题、无历史上下文可复用。"""
+        turns, anchor = self.get_topic_context(current_question, topic_id, max_turns)
+        if not turns:
+            return "", anchor
+        parts = ["## 对话上下文（同一话题，你之前问过）"]
+        for i, turn in enumerate(turns):
+            parts.append(f"Q{i + 1}: {turn['question']}")
+            if turn.get("sql"):
+                parts.append(f"SQL{i + 1}: {turn['sql'][:100]}")
+        return "\n".join(parts), anchor
 
     def detect_incremental(self, question: str) -> bool:
         """检测是否追问"""

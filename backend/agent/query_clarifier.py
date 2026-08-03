@@ -36,11 +36,19 @@ UNDERSTAND_PROMPT = """你是数据库查询理解助手。分析用户问题，
 - detail_lookup: 查具体记录
 - analysis: 含"为什么/原因/如何改进"的综合分析
 
+## 话题标签 topic_id（用于对话记忆分组，保证同话题检索同表）
+给当前问题打一个简短话题标签（如 "蓝牙耳机销售分析" / "退货分析" / "库存盘点"）。
+规则：
+  - 当前问题**延续**上一轮话题（上一轮话题标签见下方上下文）→ **必须复用**那个标签
+  - 当前问题**开启新话题**（如"按地区看销售额"是自足的新问法）→ 输出一个新的简短标签
+  - 首轮对话或没有上一轮标签 → 输出一个新标签
+
 ## 输出JSON格式
 {
   "needs_clarification": true/false,
   "reason": "一句话",
   "intent": "意图类型",
+  "topic_id": "简短话题标签",
   "clarified_question": "改写后的清晰问题（不需要反问时必填）",
   "sql_hint": "给SQL生成器的指引（如：用ORDER BY ASC表示'不好'、用LEFT JOIN查所有产品包括无订单的）",
   "follow_up_questions": [],
@@ -57,12 +65,15 @@ class QueryClarifier:
         self.client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
     async def understand(self, question: str, schema_context: dict,
-                         conversation_history: list = None) -> dict:
+                         conversation_history: list = None,
+                         prev_topic_id: str = "") -> dict:
         """
         综合分析用户问题。
 
-        返回: {needs_clarification, intent, clarified_question, sql_hint,
+        返回: {needs_clarification, intent, topic_id, clarified_question, sql_hint,
                follow_up_questions, alternative_questions, reason}
+
+        prev_topic_id: 上一轮话题标签，让 LLM 判断当前是延续还是新话题。
 
         异步化：OpenAI调用丢到线程池，避免阻塞事件循环。
         """
@@ -79,8 +90,10 @@ class QueryClarifier:
             for m in conversation_history[-4:]:
                 ctx += f"  {m['role']}: {m['content'][:80]}\n"
 
+        prev_line = f"上一轮话题标签: {prev_topic_id}" if prev_topic_id else "上一轮话题标签: （无）"
         user_prompt = f"""{schema_summary}
 {ctx}
+{prev_line}
 用户问题: {question}"""
 
         def _llm_call():
@@ -124,6 +137,7 @@ class QueryClarifier:
             "needs_clarification": False,
             "reason": "LLM异常，默认放行",
             "intent": "sales_aggregation",
+            "topic_id": "",
             "clarified_question": question,
             "sql_hint": "",
             "follow_up_questions": [],

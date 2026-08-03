@@ -209,6 +209,7 @@ async def query(request: QueryRequest):
                 request.question,
                 final.get("sql", ""),
                 {"row_count": final.get("result", {}).get("row_count", 0)},
+                topic_id=final.get("topic_id", ""),
             )
 
         # 空结果有产品建议 → 触发反问模式

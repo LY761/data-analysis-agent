@@ -55,6 +55,7 @@ class WorkflowState(TypedDict):
     intent: str                # 意图分类结果
     intent_name: str           # 意图中文名
     intent_method: str         # 分类方法(rule/llm)
+    topic_id: str              # LLM 语义话题标签（同话题同标签，检索锚的依据）
     sql: str                   # LLM生成的SQL
     validation_result: dict    # SQL校验结果
     retry_count: int           # SQL修正已重试次数
@@ -85,6 +86,15 @@ def retrieve_schema_node(state: WorkflowState) -> WorkflowState:
     t0 = time.time()
     # 用LLM改写后的问题检索，比原始问题更精准
     question = state.get("clarified_question") or state["question"]
+    # 同话题锚：追问沿用话题起始的完整问题，稳定命中同一批表；换话题锚=当前问题，自然发散。
+    from agent.conversation_memory import get_current_session
+    mem = get_current_session()
+    if mem:
+        _ctx, anchor = mem.build_topic_context(
+            state.get("original_question") or state["question"],
+            topic_id=state.get("topic_id", ""))
+        if anchor and anchor != question and anchor not in question:
+            question = f"{anchor} {question}"
     schema_context = schema_retriever.retrieve(question)
 
     if not schema_context.get("tables"):
@@ -121,8 +131,12 @@ async def clarify_question_node(state: WorkflowState) -> WorkflowState:
     if state.get("error"):
         return state
 
-    # 缓存命中：同问题直接复用
-    cache_key = f"{question}|{len(schema_context.get('tables',[]))}"
+    from agent.conversation_memory import get_current_session
+    mem = get_current_session()
+    prev_tid = mem.get_last_topic_id() if mem else ""
+
+    # 缓存命中：同问题（同上一话题标签）直接复用
+    cache_key = f"{question}|{len(schema_context.get('tables',[]))}|{prev_tid}"
     if cache_key in _understand_cache and not history:
         cached = _understand_cache[cache_key]
         tr = TraceLog.current()
@@ -148,15 +162,13 @@ async def clarify_question_node(state: WorkflowState) -> WorkflowState:
                 "intent": "sales_aggregation",
                 "intent_name": "销售统计",
                 "intent_method": "rewrite",
+                "topic_id": "",
                 "question": rewritten,
             }
 
-    # 注入对话历史上下文
-    from agent.conversation_memory import get_current_session
-    mem = get_current_session()
+    # 注入对话历史上下文（同一话题自适应窗口，替代固定2轮）
     if mem and mem.turns and not history:
-        # 从对话记忆构建上下文（自动注入前几轮Q-SQL）
-        ctx_text = mem.build_context(max_turns=2)
+        ctx_text, _anchor = mem.build_topic_context(question, topic_id=prev_tid, max_turns=8)
         if ctx_text:
             question = f"{ctx_text}\n当前问题: {question}"
             logger.info(f"[Understand] 注入对话上下文 ({len(mem.turns)}轮历史)")
@@ -177,9 +189,9 @@ async def clarify_question_node(state: WorkflowState) -> WorkflowState:
                 "intent": rule["intent"],
                 "intent_name": rule["intent_name"],
                 "intent_method": "rule",
+                "topic_id": "",
                 "question": question,
             }
-            cache_key = f"{question}|{len(schema_context.get('tables', []))}"
             _understand_cache[cache_key] = dict(new_state)
             tr = TraceLog.current()
             if tr: tr.record("understand", "ok",
@@ -187,8 +199,9 @@ async def clarify_question_node(state: WorkflowState) -> WorkflowState:
             logger.info(f"[Understand] 规则快路径: intent={rule['intent']} (跳过LLM)")
             return new_state
 
-    # 一次LLM调用：同时完成澄清判断+意图分类+问题改写
-    result = await query_clarifier.understand(question, schema_context, history)
+    # 一次LLM调用：同时完成澄清判断+意图分类+问题改写+话题标签
+    result = await query_clarifier.understand(question, schema_context, history,
+                                              prev_topic_id=prev_tid)
     # Token 消耗采集
     span = state.get("retrieval_span")
     if span:
@@ -219,6 +232,7 @@ async def clarify_question_node(state: WorkflowState) -> WorkflowState:
         "intent": intent,
         "intent_name": intent,
         "intent_method": "llm",
+        "topic_id": result.get("topic_id", ""),
         "question": result.get("clarified_question", question),
     }
 
@@ -447,6 +461,7 @@ def build_final_response(state: WorkflowState) -> WorkflowState:
             "tables": [t["table"] for t in state.get("schema_context", {}).get("tables", [])],
         },
         "retry_count": state.get("retry_count", 0),
+        "topic_id": state.get("topic_id", ""),
         "empty_suggestions": state.get("query_result", {}).get("_empty_suggestions", []),
         "error": state.get("error"),
     }
