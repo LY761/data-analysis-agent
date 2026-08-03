@@ -1023,3 +1023,95 @@ async def analyze_competitor_endpoint(name: str = ""):
     """分析指定竞品"""
     result = analyze_competitor(name)
     return result
+
+
+# ================================================================
+# 市场情报
+# ================================================================
+
+class MarketSelectionRequest(BaseModel):
+    category: str
+
+
+class MarketProductRequest(BaseModel):
+    query: str
+
+
+@router.post("/market/selection")
+async def market_selection(request: MarketSelectionRequest):
+    from agent.market_intelligence.selection import analyze_selection
+    result = analyze_selection(request.category)
+    return result
+
+
+@router.post("/market/product")
+async def market_product(request: MarketProductRequest):
+    from agent.market_intelligence.product_analyzer import analyze_product
+    result = analyze_product(request.query)
+    return result
+
+
+@router.post("/market/stream")
+async def market_stream(request: MarketProductRequest):
+    """SSE 流式市场情报分析。按 query 自动判断 selection / product。"""
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from agent.agent_router import agent_router
+
+    async def event_gen():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def sse(event, data):
+            return f"event: {event}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
+
+        def stream_cb(text):
+            loop.call_soon_threadsafe(lambda: queue.put_nowait(text))
+
+        async def forward():
+            while not queue.empty():
+                yield sse("status", {"message": queue.get_nowait()})
+
+        route = await asyncio.to_thread(agent_router.route, request.query)
+        mode = route.get("mode")
+        sub = route.get("sub", "selection")
+        query = route.get("query", request.query)
+
+        if mode != "market_intelligence":
+            yield sse("status", {"message": "未识别为市场情报请求"})
+            yield sse("done", {})
+            return
+
+        task = asyncio.create_task(_run_market(sub, query, stream_cb))
+
+        while True:
+            async for ev in forward():
+                yield ev
+            if task.done():
+                break
+            await asyncio.sleep(0.03)
+
+        async for ev in forward():
+            yield ev
+
+        try:
+            result = task.result()
+        except Exception as e:
+            yield sse("error", {"message": str(e)})
+            yield sse("done", {})
+            return
+
+        yield sse("result", result)
+        yield sse("done", {})
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+async def _run_market(sub: str, query: str, stream_cb):
+    """后台任务：跑选品或商品研究（阻塞调用丢线程池）"""
+    import asyncio
+    if sub == "selection":
+        from agent.market_intelligence.selection import analyze_selection
+        return await asyncio.to_thread(analyze_selection, query, None, stream_cb)
+    from agent.market_intelligence.product_analyzer import analyze_product
+    return await asyncio.to_thread(analyze_product, query, None, stream_cb)
