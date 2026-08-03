@@ -1,75 +1,54 @@
 from unittest.mock import patch, MagicMock
-from agent.market_intelligence.search import search_products, _normalize_url
+from agent.market_intelligence.search import search_products
 
-FAKE_HTML = """
+FAKE_AMAZON = """
 <html><body>
-<a class="result__a" href="https://www.amazon.com/dp/B0ABC123">Bluetooth Earbuds Pro</a>
-<a class="result__a" href="https://www.amazon.com/dp/B0XYZ999">Wireless Earbuds Mini</a>
-<div class="result__snippet">Best seller bluetooth earbuds 2026</div>
+<div data-asin="B0ABC12345"><h2><span>Bluetooth Earbuds Pro</span></h2></div>
+<div data-asin="B0XYZ99999"><h2><span>Wireless Earbuds Mini</span></h2></div>
+<div data-asin="BADASIN"><h2><span>No</span></h2></div>
+<div><h2><span>No ASIN attr</span></h2></div>
 </body></html>
 """
 
-def test_search_parses_results():
+def test_search_parses_amazon_results():
     fake_resp = MagicMock()
     fake_resp.status_code = 200
-    fake_resp.text = FAKE_HTML
-    with patch("httpx.Client.get", return_value=fake_resp) as mock_get:
+    fake_resp.text = FAKE_AMAZON
+    with patch("agent.market_intelligence.search.cr.get", return_value=fake_resp) as mock_get:
         results = search_products("bluetooth earbuds")
+    # 只保留 10位合法ASIN + 有标题的卡片；无效ASIN(BADASIN)和无data-asin的被过滤
     assert len(results) == 2
     assert results[0]["title"] == "Bluetooth Earbuds Pro"
-    assert "B0ABC123" in results[0]["url"]
-    assert results[0]["snippet"] == "Best seller bluetooth earbuds 2026"
-    assert mock_get.call_args[0][0].startswith("https://html.duckduckgo.com")
+    assert "/dp/B0ABC12345" in results[0]["url"]
+    assert mock_get.call_args[0][0] == "https://www.amazon.com/s"
+
 
 def test_search_returns_empty_on_non_200():
     fake_resp = MagicMock()
     fake_resp.status_code = 500
-    fake_resp.text = FAKE_HTML
-    with patch("httpx.Client.get", return_value=fake_resp) as mock_get:
-        results = search_products("bluetooth earbuds")
-    assert results == []
-    assert mock_get.call_args[0][0].startswith("https://html.duckduckgo.com")
+    fake_resp.text = FAKE_AMAZON
+    with patch("agent.market_intelligence.search.cr.get", return_value=fake_resp):
+        assert search_products("x") == []
 
 
-def test_normalize_protocol_relative_url():
-    # // 开头的 protocol-relative 链接（非重定向）→ 补 https: 前缀
-    assert _normalize_url("//www.amazon.com/dp/B0ABC123") == \
-        "https://www.amazon.com/dp/B0ABC123"
-
-
-def test_normalize_ddg_redirect_decodes_uddg():
-    # DDG 重定向链接 → 解码 uddg 参数取真实目标 URL
-    href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.amazon.com%2Fdp%2FB0ABC123%3Fth%3D1&rut=abc"
-    assert _normalize_url(href) == "https://www.amazon.com/dp/B0ABC123?th=1"
-
-
-def test_normalize_keeps_plain_http():
-    assert _normalize_url("https://www.amazon.com/dp/B0XYZ999") == \
-        "https://www.amazon.com/dp/B0XYZ999"
-
-
-def test_normalize_rejects_non_http():
-    assert _normalize_url("javascript:void(0)") is None
-    assert _normalize_url("") is None
-    assert _normalize_url(None) is None
-
-
-DDG_REDIRECT_HTML = """
-<html><body>
-<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.amazon.com%2Fdp%2FB0ABC123%3Fth%3D1&amp;rut=abc">Earbuds Pro</a>
-<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.amazon.com%2Fdp%2FB0XYZ999">Earbuds Mini</a>
-<a class="result__a" href="javascript:void(0)">Bad Link</a>
-<div class="result__snippet">Top bluetooth earbuds</div>
-</body></html>
-"""
-
-def test_search_normalizes_ddg_redirects_and_filters_bad():
+def test_search_filters_invalid_asin():
     fake_resp = MagicMock()
     fake_resp.status_code = 200
-    fake_resp.text = DDG_REDIRECT_HTML
-    with patch("httpx.Client.get", return_value=fake_resp):
-        results = search_products("bluetooth earbuds")
-    # 3 个 a.result__a：2 个重定向解码为 http(s)，1 个 javascript: 被过滤
-    assert len(results) == 2
-    assert results[0]["url"] == "https://www.amazon.com/dp/B0ABC123?th=1"
-    assert results[1]["url"] == "https://www.amazon.com/dp/B0XYZ999"
+    fake_resp.text = '<div data-asin="NOT_A_VALID_ASIN_XYZ"><h2><span>T</span></h2></div>'
+    with patch("agent.market_intelligence.search.cr.get", return_value=fake_resp):
+        assert search_products("x") == []
+
+
+def test_search_handles_request_exception():
+    with patch("agent.market_intelligence.search.cr.get", side_effect=Exception("network")):
+        assert search_products("x") == []
+
+
+def test_search_respects_limit():
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    cards = "".join(f'<div data-asin="B0{i:08d}"><h2><span>P{i}</span></h2></div>'
+                    for i in range(10))
+    fake_resp.text = f"<html><body>{cards}</body></html>"
+    with patch("agent.market_intelligence.search.cr.get", return_value=fake_resp):
+        assert len(search_products("x", limit=3)) == 3

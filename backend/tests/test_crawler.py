@@ -45,7 +45,7 @@ class _FailingClient(_FakeClient):
 
 
 def test_scrape_product_success(monkeypatch):
-    monkeypatch.setattr(crawler.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(crawler.cr, "get", lambda url, **kw: _FakeResponse())
     p = crawler.scrape_product("https://www.amazon.com/dp/B0XYZ")
     assert p["title"] == "Anker Soundcore P40i True Wireless"
     assert p["price"] == 49.99
@@ -54,7 +54,9 @@ def test_scrape_product_success(monkeypatch):
 
 
 def test_scrape_product_failure_returns_empty_dict(monkeypatch):
-    monkeypatch.setattr(crawler.httpx, "Client", _FailingClient)
+    def _fail(url, **kw):
+        raise RuntimeError("network error")
+    monkeypatch.setattr(crawler.cr, "get", _fail)
     p = crawler.scrape_product("https://www.amazon.com/dp/B0XYZ")
     assert p == {"title": "", "price": None, "rating": None,
                  "review_count": None, "url": "https://www.amazon.com/dp/B0XYZ"}

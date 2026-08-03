@@ -1,8 +1,8 @@
 """共享爬虫：抓取 Amazon 产品页 → 结构化字段。
-httpx+BS4 自实现，供 market_intelligence 与 competitor_analysis 共用。
-依赖: httpx, bs4（Agent venv 已有）"""
+供 market_intelligence 与 competitor_analysis 共用。
+依赖: curl_cffi（Chrome TLS 指纹，对抗 Amazon 反爬）, bs4"""
 import re
-import httpx
+from curl_cffi import requests as cr
 from bs4 import BeautifulSoup
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -53,10 +53,10 @@ def extract_amazon_product(url: str, html: str) -> dict:
 
 
 def scrape_product(url: str) -> dict:
-    """抓取单个产品页。失败返回空字段 dict，不抛异常。"""
+    """抓取单个产品页。用 curl_cffi 的 Chrome TLS 指纹对抗反爬。失败返回空字段 dict，不抛异常。"""
     try:
-        with httpx.Client(headers=HEADERS, timeout=20.0, follow_redirects=True) as client:
-            resp = client.get(url)
+        resp = cr.get(url, headers=HEADERS, impersonate="chrome",
+                      timeout=20, allow_redirects=True)
         if resp.status_code == 200:
             return extract_amazon_product(url, resp.text)
     except Exception:
