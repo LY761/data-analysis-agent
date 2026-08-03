@@ -204,6 +204,7 @@ body {
 <div class="sidebar" id="sidebar">
   <div class="sidebar-inner">
     <button class="quick-tab" id="quickTab" onclick="toggleQuickPanel()" title="快捷卡片">快捷卡片</button>
+    <button class="quick-tab" id="marketTab" onclick="toggleMarketPanel()" title="市场情报">🛒 市场情报</button>
     <div class="panel-content" id="panelContent">
       <h4>📊 快捷查询</h4>
       <div class="quick-grid" id="quickQueryGrid"></div>
@@ -216,6 +217,13 @@ body {
       <h4>🔍 竞品分析</h4>
       <div class="quick-grid" id="competitorGrid">
         <div class="quick-card" onclick="runQuickAction('competitor')"><div class="icon">🔍</div><div class="label">竞品对比</div><div class="desc">LLM分析竞品数据</div></div>
+      </div>
+    </div>
+    <div class="panel-content" id="marketPanel" style="display:none;">
+      <h4>🛒 市场情报</h4>
+      <div class="quick-grid">
+        <div class="quick-card" onclick="openMarketSelection()"><div class="icon">🔍</div><div class="label">选品分析</div><div class="desc">找蓝海品类机会</div></div>
+        <div class="quick-card" onclick="openMarketProduct()"><div class="icon">📦</div><div class="label">商品研究</div><div class="desc">深挖卖点与痛点</div></div>
       </div>
     </div>
   </div>
@@ -428,10 +436,13 @@ async function sendMessage(text) {
   });
 
   try {
-    const res = await fetch('/api/query/stream', {
+    // 市场情报关键词 → /api/market/stream，否则走普通查询流
+    const isMarket = /选品|市场机会|研究一下|能不能做|值得卖吗|差评|痛点/.test(query);
+    const url = isMarket ? '/api/market/stream' : '/api/query/stream';
+    const res = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({question: query}),
+      body: JSON.stringify(isMarket ? {query: query} : {question: query}),
     });
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
 
@@ -553,6 +564,39 @@ function formatResponse(data, question) {
     return html;
   }
 
+  // Market intelligence: 选品分析卡片
+  if (data.recommendation) {
+    const rec = data.recommendation;
+    html += '<div style="font-size:14px;line-height:1.8;">'
+      + '<h3>📊 ' + (data.category || '') + ' 选品机会</h3>'
+      + '<p>评分：' + (rec.score ?? '-') + '/100 · ' + (rec.verdict || '') + '</p>'
+      + '<p>建议价格带：' + (rec.price_band || '-') + '</p>'
+      + '<p>竞争强度：' + (rec.competition || '-') + '</p>'
+      + '<p>' + (rec.reasoning || data.profile || '') + '</p>'
+      + '</div>';
+    if (data.products && data.products.length) {
+      html += '<button class="toggle-btn" onclick="toggleSection(\'mk_data\')">📄 产品数据 (' + data.products.length + '个)</button>';
+      html += '<div id="mk_data" class="toggle-section"><table style="width:100%;border-collapse:collapse;">'
+        + '<tr><th style="text-align:left;">产品</th><th>价格</th><th>评分</th><th>评论</th></tr>'
+        + data.products.map(p => '<tr><td>' + (p.title||'').slice(0,30) + '</td><td>' + (p.price ?? '-') + '</td><td>' + (p.rating ?? '-') + '</td><td>' + (p.review_count ?? '-') + '</td></tr>').join('')
+        + '</table></div>';
+    }
+    return html;
+  }
+
+  // Market intelligence: 商品研究卡片
+  if (data.sellpoints || data.pains || data.suggestions) {
+    const prod = data.product || {};
+    html += '<div style="font-size:14px;line-height:1.8;">';
+    html += '<h3>📦 ' + (prod.title || data.query || '') + '</h3>';
+    if (prod.price) html += '<p>参考价格：' + prod.price + '</p>';
+    if (data.sellpoints) html += '<p><strong>💡 核心卖点</strong></p>' + renderMarkdown(data.sellpoints);
+    if (data.pains) html += '<p><strong>⚠️ 用户痛点</strong></p>' + renderMarkdown(data.pains);
+    if (data.suggestions) html += '<p><strong>🚀 改进建议</strong></p>' + renderMarkdown(data.suggestions);
+    html += '</div>';
+    return html;
+  }
+
   // SQL result
   if (data.sql) {
     // 自然语言摘要（口语化回答）
@@ -626,8 +670,15 @@ function formatResponse(data, question) {
 function toggleQuickPanel() {
   const sidebar = document.getElementById('sidebar');
   const tab = document.getElementById('quickTab');
+  const mtab = document.getElementById('marketTab');
+  const panelContent = document.getElementById('panelContent');
+  const marketPanel = document.getElementById('marketPanel');
   sidebar.classList.toggle('expanded');
-  tab.classList.toggle('active');
+  const expanded = sidebar.classList.contains('expanded');
+  tab.classList.toggle('active', expanded);
+  if (mtab) mtab.classList.remove('active');
+  if (panelContent) panelContent.style.display = '';
+  if (marketPanel) marketPanel.style.display = 'none';
 }
 
 function hideQuickPanel() {
@@ -649,6 +700,58 @@ document.querySelector('.main-wrap').addEventListener('click', e => {
 function hideQuickPanel() {
   const sidebar = document.getElementById('sidebar');
   if (sidebar) sidebar.classList.remove('expanded');
+  const tab = document.getElementById('quickTab');
+  const mtab = document.getElementById('marketTab');
+  const panelContent = document.getElementById('panelContent');
+  const marketPanel = document.getElementById('marketPanel');
+  if (tab) tab.classList.remove('active');
+  if (mtab) mtab.classList.remove('active');
+  if (panelContent) panelContent.style.display = '';
+  if (marketPanel) marketPanel.style.display = 'none';
+}
+
+// ==================== Market Panel (市场情报) ====================
+function toggleMarketPanel() {
+  const sidebar = document.getElementById('sidebar');
+  const tab = document.getElementById('quickTab');
+  const mtab = document.getElementById('marketTab');
+  const panelContent = document.getElementById('panelContent');
+  const marketPanel = document.getElementById('marketPanel');
+  const expanded = sidebar.classList.contains('expanded');
+  if (expanded && mtab.classList.contains('active')) {
+    // 再次点击 → 收起
+    sidebar.classList.remove('expanded');
+    mtab.classList.remove('active');
+    panelContent.style.display = '';
+    marketPanel.style.display = 'none';
+  } else {
+    // 展开并显示市场情报面板
+    sidebar.classList.add('expanded');
+    mtab.classList.add('active');
+    if (tab) tab.classList.remove('active');
+    if (panelContent) panelContent.style.display = 'none';
+    marketPanel.style.display = 'block';
+  }
+}
+
+function openMarketSelection() {
+  hideQuickPanel();
+  const category = prompt('请输入要分析的品类（如：蓝牙耳机、露营灯）：', '');
+  if (category && category.trim()) {
+    const q = '分析一下' + category.trim() + '的选品机会';
+    document.getElementById('input').value = q;
+    sendMessage(q);
+  }
+}
+
+function openMarketProduct() {
+  hideQuickPanel();
+  const input = prompt('请输入产品名或商品链接（如：Anker 蓝牙耳机）：', '');
+  if (input && input.trim()) {
+    const q = '研究一下 ' + input.trim();
+    document.getElementById('input').value = q;
+    sendMessage(q);
+  }
 }
 
 async function runQuickCard(key, label) {
