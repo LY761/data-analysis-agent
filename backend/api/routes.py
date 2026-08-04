@@ -1008,6 +1008,11 @@ class MarketProductRequest(BaseModel):
     query: str
 
 
+class MarketPasteRequest(BaseModel):
+    text: str
+    mode: str = "product"   # product | selection | competitor
+
+
 @router.post("/market/selection")
 def market_selection(request: MarketSelectionRequest):
     # 普通 def：FastAPI 自动丢线程池，避免网络爬取+LLM 的阻塞调用卡住事件循环
@@ -1021,6 +1026,17 @@ def market_product(request: MarketProductRequest):
     # 普通 def：FastAPI 自动丢线程池，避免网络爬取+LLM 的阻塞调用卡住事件循环
     from agent.market_intelligence.product_analyzer import analyze_product
     result = analyze_product(request.query)
+    return result
+
+
+@router.post("/market/paste")
+def market_paste(request: MarketPasteRequest):
+    """粘贴数据分析 — 用户提供真实文本，LLM 直接分析（不触发爬虫）。
+    反爬导致自动抓取失败时的可靠替代：把看到的商品/市场/竞品信息贴进来。
+    mode: product(商品研究) / selection(选品) / competitor(竞品洞察)
+    """
+    from agent.market_intelligence.paste_analysis import analyze_pasted
+    result = analyze_pasted(request.mode, request.text)
     return result
 
 

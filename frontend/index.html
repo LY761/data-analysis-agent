@@ -246,6 +246,7 @@ body {
       <div class="quick-grid">
         <div class="quick-card" onclick="openMarketSelection()"><div class="icon">🔍</div><div class="label">选品分析</div><div class="desc">找蓝海品类机会</div></div>
         <div class="quick-card" onclick="openMarketProduct()"><div class="icon">📦</div><div class="label">商品研究</div><div class="desc">深挖卖点与痛点</div></div>
+        <div class="quick-card" onclick="openPasteModal('product')"><div class="icon">📋</div><div class="label">粘贴数据分析</div><div class="desc">贴真实信息，绕过反爬</div></div>
       </div>
     </div>
   </div>
@@ -1052,6 +1053,42 @@ async function loadHistory() {
   } catch(e) { body.innerHTML = '加载失败: ' + e.message; }
 }
 
+// ==================== 粘贴数据分析（A方案：用户提供真实数据） ====================
+function openPasteModal(preMode) {
+  document.getElementById('pasteMode').value = preMode || 'product';
+  document.getElementById('pasteText').value = '';
+  document.getElementById('pasteModal').classList.add('show');
+  document.getElementById('pasteText').focus();
+}
+
+async function submitPaste() {
+  const mode = document.getElementById('pasteMode').value;
+  const text = document.getElementById('pasteText').value.trim();
+  if (!text) { alert('请先粘贴内容'); return; }
+  closeModal('pasteModal');
+  hideQuickPanel();
+  const modeLabel = {product: '商品研究', selection: '选品分析', competitor: '竞品分析'}[mode];
+  addMessage('user', '📋 粘贴' + modeLabel + '数据');
+  addLoading();
+  try {
+    const res = await fetch('/api/market/paste', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: text, mode: mode}),
+    });
+    const data = await res.json();
+    removeLoading();
+    if (data.error) { addMessage('assistant', '❌ ' + data.error); return; }
+    if (mode === 'competitor') {
+      addMessage('assistant', formatResponse({chat_reply: data.analysis || '分析完成'}, '粘贴竞品分析'));
+    } else {
+      addMessage('assistant', formatResponse(data, '粘贴' + modeLabel));
+    }
+  } catch(e) {
+    removeLoading();
+    addMessage('assistant', '❌ 分析失败: ' + e.message);
+  }
+}
+
 // ==================== Init ====================
 document.addEventListener('DOMContentLoaded', () => {
   buildQuickCards();
@@ -1071,6 +1108,22 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="modal-box">
     <div class="modal-head"><h3>🕘 历史对话</h3><button class="modal-close" onclick="closeModal('histModal')">✕</button></div>
     <div class="modal-body" id="histModalBody">加载中...</div>
+  </div>
+</div>
+<!-- 粘贴数据分析模态框 -->
+<div class="modal-mask" id="pasteModal" onclick="if(event.target===this)closeModal('pasteModal')">
+  <div class="modal-box">
+    <div class="modal-head"><h3>📋 粘贴数据分析</h3><button class="modal-close" onclick="closeModal('pasteModal')">✕</button></div>
+    <div class="modal-body">
+      <p style="margin:0 0 8px;font-size:12px;color:var(--text-muted);">爬虫常被反爬拦截。直接把你看到的真实信息粘贴进来分析（标题、价格、评分、评论、竞品介绍、调研笔记等）。</p>
+      <select id="pasteMode" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:12px;margin-bottom:8px;">
+        <option value="product">📦 商品研究</option>
+        <option value="selection">🔍 选品分析</option>
+        <option value="competitor">🆚 竞品分析</option>
+      </select>
+      <textarea id="pasteText" rows="8" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:12px;resize:vertical;" placeholder="粘贴商品/市场/竞品信息，例如：&#10;Anker 蓝牙耳机 $29.99 评分4.5 4000+评价&#10;主打续航30小时、低延迟…&#10;差评集中在佩戴不适…"></textarea>
+      <div style="text-align:right;margin-top:8px;"><button class="tool-btn" onclick="submitPaste()">开始分析</button></div>
+    </div>
   </div>
 </div>
 </body>
