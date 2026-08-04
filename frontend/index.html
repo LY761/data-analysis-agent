@@ -243,6 +243,14 @@ body {
 #quickCardsBody .quick-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 4px 10px rgba(56,189,248,.12); }
 #quickCardsBody .quick-card .icon { font-size: 18px; display: block; margin-bottom: 3px; }
 #quickCardsBody .quick-card .label { font-weight: 600; font-size: 11px; color: var(--text); }
+
+#quickQueryGrid .quick-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 8px; text-align: center; cursor: pointer; transition: all .15s; font-size: 12px;
+}
+#quickQueryGrid .quick-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 4px 10px rgba(56,189,248,.12); }
+#quickQueryGrid .quick-card .icon { font-size: 18px; display: block; margin-bottom: 3px; }
+#quickQueryGrid .quick-card .label { font-weight: 600; font-size: 11px; color: var(--text); }
 </style>
 </head>
 <body>
@@ -316,7 +324,7 @@ const QUICK_QUERIES = [
 ];
 
 function buildQuickCards() {
-  const grid = document.getElementById('quickCardsBody');
+  const grid = document.getElementById('quickQueryGrid');
   if (!grid) return;
   grid.innerHTML = QUICK_QUERIES.map(q =>
     `<div class="quick-card" onclick="runQuickCard('${q.key}','${q.label}')"><div class="icon">${q.icon}</div><div class="label">${q.label}</div></div>`
