@@ -62,6 +62,22 @@ class QueryResponse(BaseModel):
     trace_id: str = ""
 
 
+async def _knowledge_with_search(question: str, fallback: str) -> str:
+    """知识类问题：先联网搜索再 LLM 总结；任一环节失败降级 fallback（纯 LLM 回答）。"""
+    try:
+        from config import WEB_SEARCH_ENABLED
+        if not WEB_SEARCH_ENABLED:
+            return fallback
+        from agent.web_search import web_search, summarize_with_llm
+        results = await asyncio.to_thread(web_search, question, 5)
+        if not results:
+            return fallback
+        answer = await asyncio.to_thread(summarize_with_llm, question, results)
+        return answer or fallback
+    except Exception:
+        return fallback
+
+
 def _build_schema_hash() -> str:
     """生成当前数据库Schema的指纹，用于缓存键的Schema感知失效"""
     try:
@@ -96,8 +112,12 @@ async def query(request: QueryRequest):
 
     # 纯聊天/知识问答 → LLM直接回复，不走SQL流水线
     if route["mode"] in ("chat", "knowledge"):
+        reply = route.get("reply", "")
+        # 知识类问题：联网搜索增强（搜索/总结任一失败自动降级纯LLM回答）
+        if route["mode"] == "knowledge":
+            reply = await _knowledge_with_search(request.question, reply)
         return QueryResponse(
-            question=request.question, chat_reply=route.get("reply", ""),
+            question=request.question, chat_reply=reply,
             sql="", sql_explanation="", data=[], columns=[], row_count=0,
             chart={}, execution_time_ms=0, warnings=[],
             error=None, schema_tables=[], retry_count=0, trace_id=trace_id,
