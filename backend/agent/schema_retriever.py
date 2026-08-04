@@ -4,36 +4,295 @@ Schema检索器 — 把数据库表结构转成向量，按用户问题语义检
 
 向量库后端（通过 VECTOR_STORE 环境变量切换）:
   - chromadb（默认）: 本地持久化向量库，零基础设施
-  - milvus: 分布式向量数据库，生产环境适用
+  - milvus: 分布式向量数据库，生产环境适用（需 pip install pymilvus + 运行中的 Milvus）
+
+v2: 数据层抽象为 VectorStore 接口（Chroma/Milvus 可切换），Milvus 后端完整实现。
 """
 import json
 import logging
 import re
 from abc import ABC, abstractmethod
 from typing import Optional
-import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 from config import EMBEDDING_MODEL, CHROMA_PERSIST_DIR, VECTOR_STORE, MILVUS_HOST, MILVUS_PORT
+from chromadb.config import Settings
 
 logger = logging.getLogger(__name__)
 
+
+# ═══════════════════════════════════════════════════════════════════
+# Vector Store Abstraction Layer（数据面：Chroma / Milvus 可切换）
+# ═══════════════════════════════════════════════════════════════════
+
+class VectorStore(ABC):
+    """抽象向量库接口 — SchemaRetriever 只依赖此接口，与具体后端解耦。"""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """集合名"""
+
+    @abstractmethod
+    def add(self, embeddings, documents, metadatas, ids) -> None:
+        """批量写入向量。"""
+
+    @abstractmethod
+    def query(self, query_embedding, n_results: int = 20) -> dict:
+        """最近邻检索。返回 {documents: [[]], metadatas: [[]], distances: [[]]}"""
+
+    @abstractmethod
+    def count(self) -> int:
+        """已索引文档数。"""
+
+    @abstractmethod
+    def get_all(self) -> dict:
+        """拉取全部文档。返回 {documents: [...], metadatas: [...], ids: [...]}"""
+
+    @abstractmethod
+    def recreate(self) -> None:
+        """删除并重建集合（强制重建 / embedding 模型维度变更时）。"""
+
+    @abstractmethod
+    def delete(self, ids=None) -> None:
+        """按 id 删除，或清空全部。"""
+
+
+class ChromaVectorStore(VectorStore):
+    """ChromaDB 后端（默认，零基础设施）。"""
+
+    def __init__(self, collection_name: str, persist_dir: str = None):
+        import chromadb
+        self._name = collection_name
+        self.client = chromadb.PersistentClient(
+            path=persist_dir or CHROMA_PERSIST_DIR,
+            settings=Settings(anonymized_telemetry=False),
+        )
+        self._collection = self._get_or_create()
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def _get_or_create(self):
+        try:
+            return self.client.get_collection(self._name)
+        except Exception:
+            return self.client.create_collection(
+                name=self._name, metadata={"hnsw:space": "cosine"},
+            )
+
+    def add(self, embeddings, documents, metadatas, ids):
+        self._collection.add(embeddings=embeddings, documents=documents,
+                             metadatas=metadatas, ids=ids)
+
+    def query(self, query_embedding, n_results=20):
+        return self._collection.query(query_embeddings=[query_embedding], n_results=n_results)
+
+    def count(self):
+        return self._collection.count()
+
+    def get_all(self):
+        return self._collection.get()
+
+    def recreate(self):
+        self.client.delete_collection(self._name)
+        self._collection = self._get_or_create()
+
+    def delete(self, ids=None):
+        if ids:
+            self._collection.delete(ids=ids)
+        else:
+            self.recreate()
+
+
+class MilvusVectorStore(VectorStore):
+    """Milvus 后端（生产/分布式）— pymilvus 2.x 完整实现。
+
+    首次 add() 时按 embedding 维度自动建集合（HNSW + COSINE 索引），
+    query() 返回与 Chroma 一致的 {documents, metadatas, distances} 结构。
+    """
+
+    def __init__(self, collection_name: str, host: str = None, port: int = None):
+        self._name = collection_name
+        self.host = host or MILVUS_HOST
+        self.port = int(port or MILVUS_PORT)
+        self._available = False
+        self._collection = None
+
+        try:
+            from pymilvus import connections, Collection, utility
+            connections.connect(host=self.host, port=self.port)
+            if utility.has_collection(collection_name):
+                self._collection = Collection(collection_name)
+                self._collection.load()
+                self._available = True
+                logger.info(f"[Milvus] Connected {self.host}:{self.port}, "
+                            f"collection='{collection_name}' loaded.")
+            else:
+                logger.info(f"[Milvus] Connected {self.host}:{self.port}, "
+                            f"collection will be auto-created on first index.")
+                self._available = True
+        except ImportError:
+            logger.warning("[Milvus] pymilvus not installed — fallback ChromaDB. "
+                           "Install: pip install pymilvus")
+        except Exception as e:
+            logger.warning(f"[Milvus] Connection failed ({e}) — fallback ChromaDB. "
+                           f"Ensure Milvus is running at {self.host}:{self.port}")
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def _ensure_collection(self, dim: int):
+        """首次 add 时按 embedding 维度自动建集合 + HNSW/COSINE 索引"""
+        from pymilvus import Collection, CollectionSchema, DataType, FieldSchema
+        fields = [
+            FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=128),
+            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
+            FieldSchema(name="document", dtype=DataType.VARCHAR, max_length=8192),
+            FieldSchema(name="metadata", dtype=DataType.VARCHAR, max_length=4096),
+        ]
+        schema = CollectionSchema(fields, description="data-analysis-agent schema embeddings")
+        self._collection = Collection(self._name, schema)
+        self._collection.create_index(
+            "embedding",
+            {"index_type": "HNSW", "metric_type": "COSINE",
+             "params": {"M": 16, "efConstruction": 200}},
+        )
+        self._collection.load()
+        logger.info(f"[Milvus] Collection '{self._name}' created, dim={dim}")
+
+    def add(self, embeddings, documents, metadatas, ids):
+        if not self._available:
+            raise RuntimeError("Milvus not available")
+        if not documents:
+            return
+        if self._collection is None:
+            self._ensure_collection(dim=len(embeddings[0]) if embeddings else 384)
+        data = [
+            list(ids),
+            [list(v) for v in embeddings],
+            list(documents),
+            [json.dumps(m, ensure_ascii=False) for m in metadatas],
+        ]
+        self._collection.insert(data)
+        self._collection.flush()
+
+    def query(self, query_embedding, n_results=20):
+        empty = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+        if not self._available or self._collection is None:
+            return empty
+        try:
+            res = self._collection.search(
+                data=[list(query_embedding)],
+                anns_field="embedding",
+                param={"metric_type": "COSINE", "params": {"nprobe": 10}},
+                limit=n_results,
+                output_fields=["document", "metadata"],
+            )
+            documents, metadatas, distances = [], [], []
+            for hits in res:
+                ds, ms, dists = [], [], []
+                for h in hits:
+                    ds.append(h.entity.get("document"))
+                    try:
+                        ms.append(json.loads(h.entity.get("metadata") or "{}"))
+                    except Exception:
+                        ms.append({})
+                    # Milvus COSINE score 越接近 1 越相似；转成"距离"语义与 Chroma 对齐
+                    dists.append(round(1.0 - h.score, 6))
+                documents.append(ds)
+                metadatas.append(ms)
+                distances.append(dists)
+            return {"documents": documents, "metadatas": metadatas, "distances": distances}
+        except Exception as e:
+            logger.warning(f"[Milvus] query failed: {e}")
+            return empty
+
+    def count(self):
+        if not self._available or self._collection is None:
+            return 0
+        return self._collection.num_entities
+
+    def get_all(self):
+        empty = {"documents": [], "metadatas": [], "ids": []}
+        if not self._available or self._collection is None:
+            return empty
+        try:
+            offset, batch = 0, 1024
+            docs, metas, ids = [], [], []
+            while True:
+                res = self._collection.query(
+                    expr="id != ''", offset=offset, limit=batch,
+                    output_fields=["id", "document", "metadata"],
+                )
+                if not res:
+                    break
+                for r in res:
+                    docs.append(r.get("document"))
+                    try:
+                        metas.append(json.loads(r.get("metadata") or "{}"))
+                    except Exception:
+                        metas.append({})
+                    ids.append(r.get("id"))
+                if len(res) < batch:
+                    break
+                offset += batch
+            return {"documents": docs, "metadatas": metas, "ids": ids}
+        except Exception as e:
+            logger.warning(f"[Milvus] get_all failed: {e}")
+            return empty
+
+    def recreate(self):
+        from pymilvus import utility
+        try:
+            if utility.has_collection(self._name):
+                utility.drop_collection(self._name)
+        except Exception as e:
+            logger.warning(f"[Milvus] recreate failed: {e}")
+        self._collection = None
+
+    def delete(self, ids=None):
+        if not self._available or self._collection is None:
+            return
+        if ids:
+            expr = "id in " + str(list(ids))
+            self._collection.delete(expr=expr)
+        else:
+            self.recreate()
+
+
+def get_vector_store(collection_name: str = "schema_embeddings") -> VectorStore:
+    """工厂：按 VECTOR_STORE 配置返回对应后端；Milvus 不可用时回退 ChromaDB。"""
+    if VECTOR_STORE == "milvus":
+        store = MilvusVectorStore(collection_name)
+        if store.available:
+            return store
+        logger.warning(f"[VectorStore] Milvus requested but unavailable, falling back to ChromaDB.")
+    return ChromaVectorStore(collection_name)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SchemaRetriever — 检索逻辑与后端解耦
+# ═══════════════════════════════════════════════════════════════════
 
 class SchemaRetriever:
     """Retrieve relevant database schema by semantic search"""
 
     def __init__(self):
         self.model = None  # 懒加载：只在走向量检索时才加载BGE模型
-        self.chroma_client = chromadb.PersistentClient(
-            path=CHROMA_PERSIST_DIR,
-            settings=Settings(anonymized_telemetry=False),
-        )
         # 集合名带上 embedding 模型标识：
         # 换模型（如 large→small）时自动用全新的空集合，避免"维度不匹配"报错。
-        # 旧的集合文件会留着但不使用，不影响运行。
         model_tag = re.sub(r"[^A-Za-z0-9]+", "_", EMBEDDING_MODEL).strip("_")
         self.collection_name = f"schema_embeddings_{model_tag}"
-        self._init_collection()
+        # 数据层：按 VECTOR_STORE 配置选择 ChromaDB 或 Milvus
+        self.store = get_vector_store(self.collection_name)
+        # 兼容旧引用（main.py / reindex_schema.py 用 schema_retriever.collection.count()）
+        self.collection = self.store
 
     def _ensure_model(self):
         """懒加载BGE模型（仅在需要向量检索时）"""
@@ -42,37 +301,22 @@ class SchemaRetriever:
             self.model = SentenceTransformer(EMBEDDING_MODEL)
             print(f"[SchemaRetriever] Model loaded. dim={self.model.get_embedding_dimension()}")
 
-    def _init_collection(self):
-        """获取或创建ChromaDB集合"""
-        try:
-            self.collection = self.chroma_client.get_collection(self.collection_name)
-        except Exception:
-            self.collection = self.chroma_client.create_collection(
-                name=self.collection_name,
-                metadata={"hnsw:space": "cosine"},
-            )
-
     def _embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for texts using local model"""
         embeddings = self.model.encode(texts, normalize_embeddings=True)
         return embeddings.tolist()
 
     def index_schemas(self, schema_list: list[dict], force: bool = False):
-        """将表/列Schema索引到ChromaDB。force=True时强制重建索引。"""
-        if self.collection.count() > 0:
+        """将表/列Schema索引到向量库。force=True时强制重建索引。"""
+        if self.store.count() > 0:
             if force:
                 # 彻底重建：删除整个集合再新建。
                 # 注意：只删文档不会重置维度——集合的 embedding 维度在创建时固化，
                 # 换过 embedding 模型（如 large→small）后必须重建集合才能匹配新维度。
-                name = self.collection.name
-                self.chroma_client.delete_collection(name)
-                self.collection = self.chroma_client.create_collection(
-                    name=name,
-                    metadata={"hnsw:space": "cosine"},
-                )
-                print(f"[SchemaRetriever] 强制重建索引（已重建集合 {name}）")
+                self.store.recreate()
+                print(f"[SchemaRetriever] 强制重建索引（已重建集合 {self.collection_name}）")
             else:
-                print(f"[SchemaRetriever] Already indexed {self.collection.count()} documents, skipping...")
+                print(f"[SchemaRetriever] Already indexed {self.store.count()} documents, skipping...")
                 return
 
         documents = []
@@ -110,7 +354,7 @@ class SchemaRetriever:
         # Batch embed and insert（模型是懒加载，这里必须确保已加载）
         self._ensure_model()
         embeddings = self._embed(documents)
-        self.collection.add(
+        self.store.add(
             embeddings=embeddings,
             documents=documents,
             metadatas=metadatas,
@@ -133,7 +377,6 @@ class SchemaRetriever:
             return result
 
         # 关键词无结果 → 向量混合检索兜底（如同义词"营收"="销售额"）
-        logger = __import__('logging').getLogger(__name__)
         logger.info(f"[Schema] 关键词无结果，降级到向量检索: '{question[:30]}...'")
         try:
             return self._hybrid_retrieve(question, top_k_tables, top_k_columns)
@@ -150,8 +393,7 @@ class SchemaRetriever:
         """
         import time
         t0 = time.time()
-        all_data = self.collection.get()  # 一次性拿所有文档
-        logger = __import__('logging').getLogger(__name__)
+        all_data = self.store.get_all()  # 一次性拿所有文档
 
         # 对每个文档做关键词打分
         tokens = self._tokenize(question)
@@ -197,9 +439,7 @@ class SchemaRetriever:
         self._ensure_model()  # 懒加载BGE模型
         query_embedding = self._embed([question])[0]
         n_candidates = max(top_k_tables * 5 + top_k_columns * 3, 30)
-        results = self.collection.query(
-            query_embeddings=[query_embedding], n_results=n_candidates,
-        )
+        results = self.store.query(query_embedding, n_results=n_candidates)
         kw_scores = self._compute_keyword_scores(question, results)
 
         seen_tables = set()
@@ -273,166 +513,3 @@ class SchemaRetriever:
 
 # Singleton
 schema_retriever = SchemaRetriever()
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Vector Store Abstraction Layer
-# ═══════════════════════════════════════════════════════════════════
-# Supports: ChromaDB (default) | Milvus (production)
-# Config: VECTOR_STORE env var → "chromadb" or "milvus"
-# The SchemaRetriever above uses ChromaDB directly for simplicity.
-# For production Milvus deployment, replace with MilvusVectorStore below.
-
-
-class VectorStore(ABC):
-    """Abstract vector store interface.
-
-    Implementations: ChromaVectorStore, MilvusVectorStore
-    All concrete stores must implement: add, query, count, delete
-    """
-
-    @abstractmethod
-    def add(self, embeddings: list[list[float]], documents: list[str],
-            metadatas: list[dict], ids: list[str]) -> None:
-        """Index vectors with metadata."""
-
-    @abstractmethod
-    def query(self, query_embedding: list[float], n_results: int = 20) -> dict:
-        """Search for nearest neighbors. Returns {documents, metadatas, distances}."""
-
-    @abstractmethod
-    def count(self) -> int:
-        """Return total number of indexed documents."""
-
-    @abstractmethod
-    def delete(self, ids: list[str] = None) -> None:
-        """Delete vectors by ID or clear all."""
-
-
-class ChromaVectorStore(VectorStore):
-    """ChromaDB-backed vector store (default for development)."""
-
-    def __init__(self, collection_name: str, persist_dir: str = None):
-        import chromadb
-        self.client = chromadb.PersistentClient(
-            path=persist_dir or CHROMA_PERSIST_DIR,
-            settings=Settings(anonymized_telemetry=False),
-        )
-        try:
-            self.collection = self.client.get_collection(collection_name)
-        except Exception:
-            self.collection = self.client.create_collection(
-                name=collection_name, metadata={"hnsw:space": "cosine"},
-            )
-
-    def add(self, embeddings, documents, metadatas, ids):
-        self.collection.add(embeddings=embeddings, documents=documents,
-                           metadatas=metadatas, ids=ids)
-
-    def query(self, query_embedding, n_results=20):
-        return self.collection.query(query_embeddings=[query_embedding], n_results=n_results)
-
-    def count(self):
-        return self.collection.count()
-
-    def delete(self, ids=None):
-        if ids:
-            self.collection.delete(ids=ids)
-        else:
-            # Delete all — recreate collection
-            name = self.collection.name
-            self.client.delete_collection(name)
-            self.collection = self.client.create_collection(
-                name=name, metadata={"hnsw:space": "cosine"},
-            )
-
-
-class MilvusVectorStore(VectorStore):
-    """
-    Milvus-backed vector store (production, distributed).
-
-    **Architecture-ready skeleton.** Core interface matches ChromaVectorStore
-    for drop-in switching. Full implementation requires:
-      pip install pymilvus
-      docker run -d -p 19530:19530 milvusdb/milvus
-
-    Key advantages over ChromaDB for production:
-      - Horizontal scaling (distributed index across nodes)
-      - Metadata filtering at query time (WHERE clauses on metadata fields)
-      - GPU-accelerated search (IVF_PQ, HNSW indices)
-      - Role-based access control for multi-tenant deployments
-    """
-
-    def __init__(self, collection_name: str, host: str = None, port: int = None):
-        self.collection_name = collection_name
-        self.host = host or MILVUS_HOST
-        self.port = port or MILVUS_PORT
-        self._available = False
-        self._collection = None
-
-        try:
-            from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType
-            connections.connect(host=self.host, port=self.port)
-            # Check if collection exists
-            from pymilvus import utility
-            if utility.has_collection(collection_name):
-                self._collection = Collection(collection_name)
-                self._collection.load()
-                self._available = True
-                logger.info(f"[Milvus] Connected to {self.host}:{self.port}, "
-                          f"collection='{collection_name}' loaded.")
-            else:
-                logger.info(f"[Milvus] Connected to {self.host}:{self.port}, "
-                          f"collection='{collection_name}' not yet created — will auto-create on first index.")
-                self._available = True  # Connection OK, collection will be created on add()
-        except ImportError:
-            logger.info("[Milvus] pymilvus not installed — falling back to ChromaDB. "
-                       "Install: pip install pymilvus")
-        except Exception as e:
-            logger.warning(f"[Milvus] Connection failed ({e}) — falling back to ChromaDB. "
-                         f"Ensure Milvus is running at {self.host}:{self.port}")
-
-    @property
-    def available(self) -> bool:
-        return self._available
-
-    def add(self, embeddings, documents, metadatas, ids):
-        if not self._available:
-            return
-        # TODO: Full Milvus insert implementation
-        # - Auto-create collection with correct schema on first call
-        # - Batch insert with proper field mapping
-        # - Create index (IVF_FLAT or HNSW depending on data scale)
-        # - Flush to ensure durability
-        logger.info(f"[Milvus] add() called — {len(documents)} docs (stub, full impl pending)")
-
-    def query(self, query_embedding, n_results=20):
-        if not self._available or not self._collection:
-            return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
-        # TODO: Full Milvus ANN search
-        # - search() with metric_type="COSINE"
-        # - Filter by metadata fields
-        # - Return structured results matching ChromaDB format
-        logger.info(f"[Milvus] query() called — top_k={n_results} (stub, full impl pending)")
-        return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
-
-    def count(self):
-        if not self._available or not self._collection:
-            return 0
-        return self._collection.num_entities
-
-    def delete(self, ids=None):
-        if not self._available or not self._collection:
-            return
-        # TODO: Full Milvus delete
-        logger.info(f"[Milvus] delete() called (stub, full impl pending)")
-
-
-def get_vector_store(collection_name: str = "schema_embeddings") -> VectorStore:
-    """Factory: return the appropriate vector store based on VECTOR_STORE config."""
-    if VECTOR_STORE == "milvus":
-        store = MilvusVectorStore(collection_name)
-        if store.available:
-            return store
-        logger.warning(f"[VectorStore] Milvus requested but unavailable, falling back to ChromaDB.")
-    return ChromaVectorStore(collection_name)
