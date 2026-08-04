@@ -19,9 +19,9 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 
 def search_bing(query: str, limit: int = 5) -> list:
-    """Bing 搜索页 → [{title, url, snippet}]。失败/无结果返回 []。"""
+    """必应中国（cn.bing.com，国内可直连）→ [{title, url, snippet}]。失败/无结果返回 []。"""
     try:
-        resp = cr.get("https://www.bing.com/search", params={"q": query},
+        resp = cr.get("https://cn.bing.com/search", params={"q": query},
                       headers=HEADERS, impersonate="chrome", timeout=15,
                       allow_redirects=True)
         if resp.status_code != 200:
@@ -70,9 +70,41 @@ def search_wikipedia(query: str, limit: int = 3) -> list:
         return []
 
 
+def search_baidu(query: str, limit: int = 5) -> list:
+    """百度搜索页 → [{title, url, snippet}]。国内兜底源。失败/无结果返回 []。"""
+    try:
+        resp = cr.get("https://www.baidu.com/s", params={"wd": query, "rn": limit},
+                      headers=HEADERS, impersonate="chrome", timeout=15,
+                      allow_redirects=True)
+        if resp.status_code != 200:
+            return []
+        soup = BeautifulSoup(resp.text, "html.parser")
+        results = []
+        for div in soup.select("div.result, div.c-container")[:limit]:
+            a = div.select_one("h3 a") or div.select_one("h3.t a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            url = a.get("href", "")
+            snippet = ""
+            p = (div.select_one(".c-abstract")
+                 or div.select_one("[class*='content-right']")
+                 or div.select_one("span"))
+            if p:
+                snippet = p.get_text(" ", strip=True)[:200]
+            if title and url:
+                results.append({"title": title, "url": url, "snippet": snippet})
+        return results
+    except Exception as e:
+        logger.warning(f"[WebSearch] 百度搜索失败: {e}")
+        return []
+
+
 def web_search(query: str, limit: int = 5) -> list:
-    """主入口：Bing 优先，维基兜底。"""
+    """主入口：必应中国 → 百度 → 维基，逐级兜底（全部国内可访问优先）。"""
     results = search_bing(query, limit)
+    if not results:
+        results = search_baidu(query, limit)
     if not results:
         results = search_wikipedia(query, limit)
     return results

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 import main
 
 from agent import web_search as ws
-from agent.web_search import search_bing, search_wikipedia, web_search, summarize_with_llm
+from agent.web_search import search_bing, search_baidu, search_wikipedia, web_search, summarize_with_llm
 
 client = TestClient(main.app)
 
@@ -68,14 +68,53 @@ def test_search_wikipedia_parses_json():
     assert "客户价值" in out[0]["snippet"]
 
 
-def test_web_search_falls_back_to_wikipedia():
-    """Bing 失败 → 维基兜底"""
+BAIDU_HTML = """
+<html><body>
+<div class="result c-container" id="1"><h3 class="t"><a href="https://baike.baidu.com/item/RFM">RFM分析</a></h3>
+  <span class="c-abstract">RFM是客户价值分析模型。</span></div>
+</body></html>
+"""
+
+
+def test_search_baidu_parses_results():
+    """百度搜索结果解析：标题/URL/摘要"""
+    resp = FakeResp()
+    resp.text = BAIDU_HTML
+    with patch.object(ws.cr, "get", return_value=resp):
+        out = search_baidu("RFM", limit=1)
+    assert out[0]["title"] == "RFM分析"
+    assert out[0]["url"].startswith("https://")
+    assert "客户价值" in out[0]["snippet"]
+
+
+def test_web_search_falls_back_to_baidu():
+    """必应中国失败 → 百度兜底"""
     calls = []
 
     def _factory(url, **kw):
         calls.append(url)
-        if "bing.com" in url:
+        if "cn.bing.com" in url:
             raise RuntimeError("bing blocked")
+        resp = FakeResp()
+        resp.text = BAIDU_HTML
+        return resp
+
+    with patch.object(ws.cr, "get", _factory):
+        out = web_search("RFM", limit=1)
+    assert out and out[0]["title"] == "RFM分析"
+    assert any("baidu.com" in u for u in calls)
+
+
+def test_web_search_full_fallback_chain():
+    """必应+百度都失败 → 维基最后兜底"""
+    calls = []
+
+    def _factory(url, **kw):
+        calls.append(url)
+        if "cn.bing.com" in url:
+            raise RuntimeError("bing blocked")
+        if "baidu.com" in url:
+            raise RuntimeError("baidu blocked")
         resp = FakeResp()
         resp._json = {"query": {"search": [{"title": "RFM模型", "snippet": "RFM是客户价值分析模型"}]}}
         return resp
@@ -83,7 +122,7 @@ def test_web_search_falls_back_to_wikipedia():
     with patch.object(ws.cr, "get", _factory):
         out = web_search("RFM", limit=1)
     assert out and out[0]["title"] == "RFM模型"
-    assert any("bing.com" in u for u in calls)
+    assert any("wikipedia.org" in u for u in calls)
 
 
 def test_summarize_with_llm():
