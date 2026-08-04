@@ -10,7 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from agent.workflow import app_workflow
 from agent.workflow import WorkflowState
-from agent.conversation_memory import get_session, set_current_session
+from agent.conversation_memory import get_session, set_current_session, get_history_summary, search_all_history
 from db.executor import executor
 from services.data_masking import mask_result
 from services.retrieval_metrics import RetrievalSpan
@@ -710,11 +710,44 @@ async def list_quick_queries():
     """返回所有快捷查询列表（前端渲染卡片用）"""
     return {"queries": get_quick_query_list()}
 
+# 快捷卡片列名 → 中文（生成语言化摘要用）
+_QUICK_COL_ZH = {
+    "total_sales": "总销售额", "order_count": "订单数", "avg_order": "客单价",
+    "sales_amount": "销售额", "quantity": "销量", "total_qty": "销量",
+    "total_amount": "金额", "stock_quantity": "库存", "product_name": "产品",
+    "category": "品类", "month": "月份", "supplier": "供应商",
+    "refund_count": "退款数", "refund_rate": "退款率", "rating": "评分",
+    "avg_rating": "平均评分", "customer_name": "客户", "region": "地区",
+    "member_level": "会员等级", "payment_method": "支付方式",
+    "count": "数量", "sum": "合计", "revenue": "营收", "growth": "增长",
+}
+
+
+def _quick_card_summary(key: str, result: dict) -> str:
+    """把快捷查询结果转成一句自然语言（用户期望“语言”而非只有表格）"""
+    from services.quick_queries import QUICK_QUERIES
+    q = QUICK_QUERIES.get(key)
+    label = (q or {}).get("label", key)
+    data = result.get("data") or []
+    if not data:
+        return f"{label}：暂无数据"
+    parts = []
+    for col, val in data[0].items():
+        cname = _QUICK_COL_ZH.get(col, col)
+        if isinstance(val, float):
+            v = f"{val:,.2f}" if abs(val) < 100 else f"{val:,.0f}"
+        else:
+            v = str(val)
+        parts.append(f"{cname} {v}")
+    return f"{label}：{'；'.join(parts)}"
+
+
 @router.post("/quick/{query_key}")
 async def run_quick_card(query_key: str):
-    """执行一个快捷查询（0 Token，毫秒级）"""
+    """执行一个快捷查询（0 Token，毫秒级）。附带语言化摘要 nl_answer。"""
     result = run_quick_query_service(query_key)
     result = mask_result(result)
+    result["nl_answer"] = _quick_card_summary(query_key, result)
     return result
 
 

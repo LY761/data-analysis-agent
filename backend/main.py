@@ -30,8 +30,9 @@ if db_exists:
 else:
     print("\n[1/3] 首次启动，初始化演示数据库...")
     init_demo_db()
-    from db.connection_manager import register_demo_db
-    register_demo_db()
+# 无论数据库是否已存在都注册 demo 连接（否则 /api/db/list 永远为空）
+from db.connection_manager import register_demo_db
+register_demo_db()
 
 # 第二步：Schema索引（ChromaDB里有数据就跳过）
 col_count = schema_retriever.collection.count() if hasattr(schema_retriever, 'collection') else 0
