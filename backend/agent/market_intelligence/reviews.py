@@ -12,12 +12,14 @@ import json
 import os
 import logging
 from functools import lru_cache
+from config import COMPETITOR_SCRAPER_PATH
 
 logger = logging.getLogger(__name__)
 
 REVIEWS_GLOB = os.getenv(
     "REVIEWS_DATA_GLOB",
-    "C:/Users/LY/competitor-scraper/data/real_negative_reviews_*.json",
+    os.path.join(COMPETITOR_SCRAPER_PATH, "data", "real_negative_reviews_*.json")
+        .replace("\\", "/"),
 )
 
 

@@ -43,11 +43,23 @@ def _compare_internal(category: str) -> list:
 
 
 def analyze_selection(category: str, llm_client=None, stream_cb=None) -> dict:
-    """选品分析主入口"""
+    """选品分析主入口（带缓存：同类目在 TTL 内复用，避免重复爬12页+2次LLM）
+    流式路径（stream_cb）不读写缓存，保证进度实时推送。"""
     def progress(msg):
         if stream_cb:
             try: stream_cb(msg)
             except Exception: pass
+
+    # 缓存命中：同类目直接复用（TTL=COMPETITOR_CACHE_TTL，默认1小时）
+    if not stream_cb and not llm_client:
+        try:
+            from cache.query_cache import get_cached_result
+            cached = get_cached_result(f"selection:{category}", "selection_v1")
+            if cached:
+                logger.info(f"[Selection] 缓存命中: {category}")
+                return cached
+        except Exception:
+            pass
 
     client = llm_client or _default_client()
     try:
@@ -84,8 +96,18 @@ def analyze_selection(category: str, llm_client=None, stream_cb=None) -> dict:
             rec_raw = m.group(0)
         recommendation = json.loads(rec_raw)
 
-        return {"category": category, "products": scraped, "profile": profile,
-                "internal": internal, "recommendation": recommendation, "error": None}
+        result = {"category": category, "products": scraped, "profile": profile,
+                  "internal": internal, "recommendation": recommendation, "error": None}
+        # 写缓存（仅非流式路径）
+        if not stream_cb and not llm_client:
+            try:
+                from cache.query_cache import set_cached_result
+                from config import COMPETITOR_CACHE_TTL
+                set_cached_result(f"selection:{category}", "selection_v1", result,
+                                  ttl=COMPETITOR_CACHE_TTL)
+            except Exception:
+                pass
+        return result
     except Exception as e:
         logger.warning(f"[Selection] 分析失败: {e}")
         return {"category": category, "products": [], "profile": "",

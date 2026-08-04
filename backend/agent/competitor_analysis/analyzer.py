@@ -10,12 +10,12 @@ import os
 import logging
 from typing import Optional
 from openai import OpenAI
-from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, COMPETITOR_SCRAPER_PATH
 
 logger = logging.getLogger(__name__)
 
-# competitor-scraper 项目路径
-SCRAPER_PATH = r"C:\Users\LY\competitor-scraper"
+# competitor-scraper 项目路径（可经 COMPETITOR_SCRAPER_PATH 环境变量覆盖）
+SCRAPER_PATH = COMPETITOR_SCRAPER_PATH
 
 # 已知竞品列表
 KNOWN_COMPETITORS = {

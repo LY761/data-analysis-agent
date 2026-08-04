@@ -63,6 +63,8 @@ COMPETITOR_CACHE_TTL = int(os.getenv("COMPETITOR_CACHE_TTL", "3600"))
 COMPETITOR_REQUEST_DELAY = float(os.getenv("COMPETITOR_REQUEST_DELAY", "2.0"))
 # 我方公司名称（用于内部对比）
 OUR_COMPANY_NAME = os.getenv("OUR_COMPANY_NAME", "泛翼时代")
+# competitor-scraper 项目路径（竞品JSON/真实差评数据源，原硬编码 C:/Users/LY/...）
+COMPETITOR_SCRAPER_PATH = os.getenv("COMPETITOR_SCRAPER_PATH", r"C:\Users\LY\competitor-scraper")
 
 # 服务器配置
 HOST = os.getenv("HOST", "0.0.0.0")
