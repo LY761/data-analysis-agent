@@ -180,7 +180,10 @@ class RetrievalSpan:
         return {"recall_gap": len(missed), "missed_tables": missed}
 
     def flush(self, _db_path: str = None):
-        """写入 SQLite（execute_sql 节点完成时调用一次）"""
+        """写入 SQLite（幂等：execute_sql 节点与外层兜底各调一次只落库一条）。"""
+        if getattr(self, "_flushed", False):
+            return
+        self._flushed = True
         db_path = _db_path or _DB_PATH or "demo_sales.db"
         total = (time.time() - self.t_start) * 1000
         success = 1 if (self.row_count > 0 and not self.error) else 0

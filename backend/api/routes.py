@@ -208,6 +208,12 @@ async def query(request: QueryRequest):
 
         result = await app_workflow.ainvoke(initial_state)
         final = result.get("final_response", {})
+        # 兜底落库检索指标（execute_sql 节点已 flush 则此处幂等跳过；
+        # 上游失败未 flush 时补记一条含错误信息，保证指标看板有数据）
+        try:
+            retrieval_span.flush()
+        except Exception:
+            pass
 
         # 记录本轮对话到记忆
         if not final.get("error"):

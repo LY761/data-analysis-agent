@@ -261,10 +261,6 @@ body {
         <div class="quick-card" onclick="runQuickAction('trends')"><div class="icon">📉</div><div class="label">趋势预警</div><div class="desc">销量连续下滑</div></div>
         <div class="quick-card" onclick="runQuickAction('daily_report')"><div class="icon">📋</div><div class="label">运营日报</div><div class="desc">LLM生成总结</div></div>
       </div>
-      <h4>🔍 竞品分析</h4>
-      <div class="quick-grid" id="competitorGrid">
-        <div class="quick-card" onclick="runQuickAction('competitor')"><div class="icon">🔍</div><div class="label">竞品对比</div><div class="desc">LLM分析竞品数据</div></div>
-      </div>
     </div>
     <div class="panel-content" id="marketPanel" style="display:none;">
       <h4>🛒 市场情报</h4>
@@ -272,6 +268,7 @@ body {
         <div class="quick-card" onclick="openMarketSelection()"><div class="icon">🔍</div><div class="label">选品分析</div><div class="desc">找蓝海品类机会</div></div>
         <div class="quick-card" onclick="openMarketProduct()"><div class="icon">📦</div><div class="label">商品研究</div><div class="desc">深挖卖点与痛点</div></div>
         <div class="quick-card" onclick="openPasteModal('product')"><div class="icon">📋</div><div class="label">粘贴数据分析</div><div class="desc">贴真实信息，绕过反爬</div></div>
+        <div class="quick-card" onclick="runQuickAction('competitor')"><div class="icon">🆚</div><div class="label">竞品分析</div><div class="desc">LLM分析竞品数据</div></div>
       </div>
     </div>
   </div>
@@ -281,8 +278,6 @@ body {
 <div class="main-wrap">
 <div class="header">
   <h1><span>📊</span> 数据分析 Agent</h1>
-  <div class="status"><span class="dot"></span> NL2SQL 智能分析</div>
-  <div class="status"><span class="dot"></span> NL2SQL 智能分析</div>
   <div class="header-tools">
     <button class="tool-btn" onclick="exportExcel()" title="导出当前查询结果为Excel">📥 导出Excel</button>
     <button class="tool-btn" onclick="openDbModal()" title="管理数据库连接">🗄️ 数据库</button>
@@ -291,38 +286,7 @@ body {
   </div>
 </div>
 
-<div class="chat" id="chat">
-  <div class="welcome" id="welcome">
-    <h2>👋 有什么可以帮你的？</h2>
-    <p>问我任何关于数据的问题，或者让我帮你分析竞品</p>
-    <div class="examples">
-      <span class="example" onclick="sendExample(this.textContent)">本月销售额是多少</span>
-      <span class="example" onclick="sendExample(this.textContent)">库存不足的产品有哪些</span>
-      <span class="example" onclick="sendExample(this.textContent)">分析一下安克创新</span>
-      <span class="example" onclick="sendExample(this.textContent)">最近7天销售趋势</span>
-      <span class="example" onclick="sendExample(this.textContent)">哪个产品评分最高</span>
-      <span class="example" onclick="sendExample(this.textContent)">对比我们的定价和竞品</span>
-    </div>
-  </div>
-</div>
-
-<!-- 快捷卡片区（折叠在输入框上方） -->
-<div id="quickCardsBar" style="padding: 0 20px;">
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer;" onclick="toggleSection('quickCardsBody')">
-    <span style="font-size:12px;color:var(--text-muted);">⚡ 快捷查询</span>
-    <span id="quickCardsToggle" style="font-size:10px;color:var(--text-muted);">▼</span>
-  </div>
-  <div id="quickCardsBody" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;"></div>
-</div>
-
-<div style="padding: 0 20px 8px; display:flex; gap:8px; flex-wrap:wrap;">
-  <button class="quick-card" style="flex:none;padding:8px 14px;flex-direction:row;gap:6px;"
-          onclick="openMarketSelection()">🔍 选品分析</button>
-  <button class="quick-card" style="flex:none;padding:8px 14px;flex-direction:row;gap:6px;"
-          onclick="openMarketProduct()">📦 商品研究</button>
-  <button class="quick-card" style="flex:none;padding:8px 14px;flex-direction:row;gap:6px;"
-          onclick="runQuickAction('competitor')">🆚 竞品分析</button>
-</div>
+<div class="chat" id="chat"></div>
 
 <div class="input-area">
   <div class="input-row" id="inputRow">
@@ -1118,6 +1082,13 @@ async function submitPaste() {
 document.addEventListener('DOMContentLoaded', () => {
   buildQuickCards();
   document.getElementById('input').focus();
+  // Agent 自动打招呼（仅当无历史消息，避免刷新重复）
+  if (!messages.length) {
+    addMessage('assistant', '你好！我是数据分析助手 👋\n我可以帮你：\n' +
+      '· 📊 查数据：销售额、订单、库存、退款…\n' +
+      '· 🛒 选品分析 / 商品研究 / 竞品分析\n' +
+      '· 📋 粘贴数据分析：把看到的真实信息贴进来\n\n想从哪个开始？');
+  }
 });
 </script>
 
