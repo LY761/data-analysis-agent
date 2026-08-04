@@ -291,6 +291,7 @@ body {
     <button class="tool-btn" onclick="openDbModal()" title="管理数据库连接">🗄️ 数据库</button>
     <button class="tool-btn" onclick="window.open('metrics.html')" title="检索质量看板">📈 指标看板</button>
     <button class="tool-btn" onclick="openHistoryModal()" title="查看历史对话">🕘 历史</button>
+    <button class="tool-btn" onclick="openKbModal()" title="企业知识库（文档问答）">📚 知识库</button>
   </div>
 </div>
 
@@ -990,8 +991,27 @@ async function loadDbs() {
       + '<select id="dbType"><option value="sqlite">SQLite</option><option value="mysql">MySQL</option><option value="postgresql">PostgreSQL</option></select>'
       + '<input id="dbPath" placeholder="文件路径 或 mysql://user:pass@host:3306/db" style="flex:1;min-width:200px;">'
       + '<button class="tool-btn" onclick="addDb()">添加</button>'
+      + '</div>'
+      + '<div class="adddb-row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">'
+      + '<span style="font-size:11px;color:var(--text-muted);align-self:center;">📥 数据接入：</span>'
+      + '<input type="file" id="uploadFile" accept=".csv,.xlsx" style="font-size:11px;">'
+      + '<button class="tool-btn" onclick="uploadData()">上传建表</button>'
       + '</div>';
   } catch(e) { body.innerHTML = '加载失败: ' + e.message; }
+}
+
+async function uploadData() {
+  const f = document.getElementById('uploadFile').files[0];
+  if (!f) { alert('请先选择 CSV 或 Excel 文件'); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  try {
+    const res = await fetch('/api/data/upload', {method: 'POST', body: fd});
+    const data = await res.json();
+    if (data.error) { alert('上传失败: ' + data.error); return; }
+    alert('✅ 已建表 ' + data.table + '，共 ' + data.row_count + ' 行。\n现在可以直接在对话框问它，比如：“' + data.table + ' 的总量是多少”');
+    loadDbs();
+  } catch(e) { alert('上传失败: ' + e.message); }
 }
 
 async function switchDb(key) {
@@ -1086,6 +1106,59 @@ async function submitPaste() {
   }
 }
 
+// ==================== 企业知识库（K3/K4） ====================
+function openKbModal() {
+  document.getElementById('kbModal').classList.add('show');
+  loadKb();
+}
+
+async function loadKb() {
+  const body = document.getElementById('kbModalBody');
+  body.innerHTML = '加载中...';
+  try {
+    const res = await fetch('/api/kb/list');
+    const data = await res.json();
+    const docs = data.documents || [];
+    let html = '';
+    if (!docs.length) {
+      html = '<p style="color:var(--text-muted);margin:0 0 8px;">知识库为空。上传企业文档（txt/md/pdf/csv），Agent 就能基于它回答“我们的XX是什么”这类问题。</p>';
+    } else {
+      html = docs.map(d =>
+        '<div class="hist-item"><div class="hist-q">' + escapeHtml(d.doc) + '</div>'
+        + '<div class="hist-meta">' + d.chunks + ' 个片段 · '
+        + '<button class="tool-btn" style="padding:1px 6px;" data-doc="' + encodeURIComponent(d.doc) + '" onclick="deleteKbDoc(this.dataset.doc)">删除</button></div></div>'
+      ).join('');
+    }
+    html += '<div class="adddb-row" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">'
+      + '<input type="file" id="kbFile" accept=".txt,.md,.pdf,.csv" style="font-size:11px;">'
+      + '<button class="tool-btn" onclick="uploadKbDoc()">上传文档</button></div>';
+    body.innerHTML = html;
+  } catch(e) { body.innerHTML = '加载失败: ' + e.message; }
+}
+
+async function uploadKbDoc() {
+  const f = document.getElementById('kbFile').files[0];
+  if (!f) { alert('请先选择文档'); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  try {
+    const res = await fetch('/api/kb/upload', {method: 'POST', body: fd});
+    const data = await res.json();
+    if (data.error) { alert('上传失败: ' + data.error); return; }
+    alert('✅ 已入库 ' + data.doc + '（' + data.chunks + ' 个片段）。现在可以问它相关问题了');
+    loadKb();
+  } catch(e) { alert('上传失败: ' + e.message); }
+}
+
+async function deleteKbDoc(encDoc) {
+  const doc = decodeURIComponent(encDoc);
+  if (!confirm('删除文档 ' + doc + '？')) return;
+  try {
+    await fetch('/api/kb/' + encodeURIComponent(doc), {method: 'DELETE'});
+    loadKb();
+  } catch(e) { alert('删除失败: ' + e.message); }
+}
+
 // ==================== Init ====================
 document.addEventListener('DOMContentLoaded', () => {
   buildQuickCards();
@@ -1128,6 +1201,13 @@ document.addEventListener('DOMContentLoaded', () => {
       <textarea id="pasteText" rows="8" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:12px;resize:vertical;" placeholder="粘贴商品/市场/竞品信息，例如：&#10;Anker 蓝牙耳机 $29.99 评分4.5 4000+评价&#10;主打续航30小时、低延迟…&#10;差评集中在佩戴不适…"></textarea>
       <div style="text-align:right;margin-top:8px;"><button class="tool-btn" onclick="submitPaste()">开始分析</button></div>
     </div>
+  </div>
+</div>
+<!-- 企业知识库模态框 -->
+<div class="modal-mask" id="kbModal" onclick="if(event.target===this)closeModal('kbModal')">
+  <div class="modal-box">
+    <div class="modal-head"><h3>📚 企业知识库</h3><button class="modal-close" onclick="closeModal('kbModal')">✕</button></div>
+    <div class="modal-body" id="kbModalBody">加载中...</div>
   </div>
 </div>
 </body>

@@ -6,7 +6,7 @@ import uuid
 import hashlib
 import asyncio
 import time
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File
 from pydantic import BaseModel
 from agent.workflow import app_workflow
 from agent.workflow import WorkflowState
@@ -62,6 +62,18 @@ class QueryResponse(BaseModel):
     trace_id: str = ""
 
 
+async def _knowledge_answer(question: str, fallback: str) -> str:
+    """知识问答：企业知识库优先 → 未命中联网搜索 → 纯 LLM 兜底。"""
+    try:
+        from agent.knowledge_base import kb
+        kb_answer, _ = await asyncio.to_thread(kb.answer, question)
+        if kb_answer:
+            return kb_answer
+    except Exception:
+        pass
+    return await _knowledge_with_search(question, fallback)
+
+
 async def _knowledge_with_search(question: str, fallback: str) -> str:
     """知识类问题：先联网搜索再 LLM 总结；任一环节失败降级 fallback（纯 LLM 回答）。"""
     try:
@@ -113,9 +125,9 @@ async def query(request: QueryRequest):
     # 纯聊天/知识问答 → LLM直接回复，不走SQL流水线
     if route["mode"] in ("chat", "knowledge"):
         reply = route.get("reply", "")
-        # 知识类问题：联网搜索增强（搜索/总结任一失败自动降级纯LLM回答）
+        # 知识类问题：企业知识库优先 → 未命中再联网搜索 → 纯 LLM 兜底
         if route["mode"] == "knowledge":
-            reply = await _knowledge_with_search(request.question, reply)
+            reply = await _knowledge_answer(request.question, reply)
         return QueryResponse(
             question=request.question, chat_reply=reply,
             sql="", sql_explanation="", data=[], columns=[], row_count=0,
@@ -782,6 +794,43 @@ async def run_quick_card(query_key: str):
 # ================================================================
 
 from fastapi.responses import StreamingResponse
+
+@router.post("/data/upload")
+async def data_upload(file: UploadFile = File(...)):
+    """上传 CSV/Excel → 自动建表入库 → 立即可被 NL2SQL 查询。
+    支持 .csv（utf-8/gbk）与 .xlsx；表名由文件名生成（data_ 前缀）。"""
+    content = await file.read()
+    from services.data_ingest import ingest_file
+    result = ingest_file(file.filename or "upload.csv", content)
+    return result
+
+
+@router.post("/kb/upload")
+async def kb_upload(file: UploadFile = File(...)):
+    """上传企业文档（txt/md/pdf/csv）入库知识库，供知识问答检索。"""
+    content = await file.read()
+    from agent.knowledge_base import kb
+    try:
+        result = kb.add_document(file.filename or "doc.txt", content)
+        return result
+    except Exception as e:
+        return {"error": f"入库失败: {e}", "doc": file.filename or ""}
+
+
+@router.get("/kb/list")
+async def kb_list():
+    """知识库文档列表"""
+    from agent.knowledge_base import kb
+    return {"documents": kb.list_documents()}
+
+
+@router.delete("/kb/{doc_name}")
+async def kb_delete(doc_name: str):
+    """删除知识库文档"""
+    from agent.knowledge_base import kb
+    kb.delete_document(doc_name)
+    return {"ok": True, "doc": doc_name}
+
 
 class ExportRequest(BaseModel):
     data: list = []

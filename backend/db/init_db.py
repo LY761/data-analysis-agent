@@ -223,6 +223,39 @@ CREATE TABLE product_reviews (
     ]
 
 
+def build_full_sqlite_schemas() -> list:
+    """硬编码演示表描述 + sqlite_master 动态发现的上传/接入表，合并成完整 Schema。
+    数据接入（上传 CSV/Excel 建表）后调用，让 NL2SQL 立刻能问新表。"""
+    import logging
+    logger = logging.getLogger(__name__)
+    base = get_schema_descriptions("sqlite")
+    known = {t["table"] for t in base}
+    try:
+        conn = sqlite3.connect(DEMO_DB_PATH)
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' "
+            "AND name NOT IN ('query_cache','conversation_history','retrieval_log')"
+        ).fetchall()]
+        for t in tables:
+            if t in known:
+                continue
+            cols = conn.execute(f'PRAGMA table_info("{t}")').fetchall()
+            col_defs = ", ".join(f'"{c[1]}" {c[2]}' for c in cols)
+            col_list = [{"name": c[1], "type": c[2], "comment": ""} for c in cols]
+            base.append({
+                "table": t,
+                "ddl": f"CREATE TABLE {t} ({col_defs});",
+                "description": f"表 {t}：上传/接入的数据表，包含列 " + "、".join(c[1] for c in cols[:12]) + " 等",
+                "columns": col_list,
+                "sample_queries": [],
+            })
+        conn.close()
+    except Exception as e:
+        logger.warning(f"[Schema] 动态发现失败: {e}")
+    return base
+
+
 def init_demo_db():
     """创建SQLite数据库并填充样本数据（时间范围2026年1-7月）"""
     # 检查是否已有数据（含表和数据行）
