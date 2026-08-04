@@ -414,7 +414,16 @@ async def execute_sql_node(state: WorkflowState) -> WorkflowState:
                 # LLM 流式回答的 Token 粗略估算（1 token ≈ 1.5 中文字符）
                 answer_tokens = len(nl_answer)
         else:
+            # 普通路径：LLM增强口语化回答（可配置，失败自动降级规则版）
             nl_answer = _generate_nl_answer(original_q, sql, query_result)
+            if query_result.get("data"):
+                from config import NL_ANSWER_LLM
+                if NL_ANSWER_LLM:
+                    _emit_progress(state, "正在生成回答...")
+                    llm_answer = await sql_generator.answer_summary(original_q, sql, query_result)
+                    if llm_answer:
+                        nl_answer = llm_answer
+                        answer_tokens = len(llm_answer)
     elif query_result.get("row_count", 0) == 0:
         # 空结果也要给用户一句"原因/建议"，而不是什么都不说
         nl_answer = _generate_nl_answer(original_q, sql, query_result)

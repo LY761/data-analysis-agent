@@ -408,6 +408,47 @@ class SQLGenerator:
             circuit_breaker.on_failure()
             return ""
 
+    async def answer_summary(self, question: str, sql: str, query_result: dict) -> str:
+        """
+        基于查询结果生成口语化回答（LLM，非流式一次完成）。
+
+        - 返回完整回答文本；LLM不可用/失败时返回空串，调用方降级为规则版回答。
+        """
+        if not query_result.get("data"):
+            return ""
+
+        from middleware.auth_middleware import circuit_breaker
+        if not circuit_breaker.before_call():
+            return ""
+
+        summary = json.dumps(query_result["data"][:10], ensure_ascii=False, default=str)
+        system_prompt = (
+            "你是数据分析助手。根据用户问题、SQL和查询结果，用1-3句口语化的中文直接回答。"
+            "不要复述SQL，不要markdown，不要啰嗦。数据不足就如实说明。"
+        )
+        user_prompt = f"用户问题: {question}\nSQL: {sql}\n查询结果: {summary}\n请回答。"
+
+        def _call() -> str:
+            resp = self.client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=200,
+            )
+            return resp.choices[0].message.content or ""
+
+        try:
+            text = await asyncio.to_thread(_call)
+            circuit_breaker.on_success()
+            return text.strip()
+        except Exception as e:
+            logger.warning(f"[AnswerSummary] LLM回答失败: {e}")
+            circuit_breaker.on_failure()
+            return ""
+
 
 # 全局单例
 sql_generator = SQLGenerator()

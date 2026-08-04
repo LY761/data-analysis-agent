@@ -16,6 +16,9 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-your-api-key-here")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
+# NL回答增强：普通路径（非流式）也用LLM生成口语化回答（失败自动降级规则版）
+NL_ANSWER_LLM = os.getenv("NL_ANSWER_LLM", "true").lower() == "true"
+
 # 嵌入模型配置（本地运行，不需要网络和API Key）
 # bge-small: 384维/130MB ~50ms编码 | bge-large: 1024维/1.3GB ~500ms编码
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
