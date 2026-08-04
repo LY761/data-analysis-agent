@@ -157,8 +157,8 @@ class MySQLExecutor:
             raise RuntimeError(f"MySQL connection failed: {e}")
         return self._connection
 
-    def execute(self, sql: str) -> dict:
-        """Execute SQL. 返回与 db/executor.SQLExecutor 一致的统一结构。"""
+    def execute(self, sql: str, params: tuple = None) -> dict:
+        """Execute SQL（支持参数化，? 占位符自动转 %s）。返回统一结构。"""
         if not self._available:
             return {
                 "success": False, "data": [], "columns": [], "row_count": 0,
@@ -168,6 +168,8 @@ class MySQLExecutor:
 
         # SQLite → MySQL 方言翻译（快捷卡/LLM生成的SQL都含 strftime）
         sql = translate_sqlite_to_mysql(sql)
+        if params:
+            sql = sql.replace("?", "%s")  # 参数占位符 SQLite ? → MySQL %s
 
         sql_upper = sql.strip().upper()
         for keyword in self.FORBIDDEN_KEYWORDS:
@@ -186,7 +188,7 @@ class MySQLExecutor:
             with self._lock:
                 conn = self._get_connection()
                 with conn.cursor() as cursor:
-                    cursor.execute(sql)
+                    cursor.execute(sql, params or ())
                     rows = cursor.fetchall()
                     columns = [desc[0] for desc in cursor.description] if cursor.description else []
 

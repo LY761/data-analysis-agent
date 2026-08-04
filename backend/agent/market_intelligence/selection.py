@@ -31,10 +31,11 @@ def _compare_internal(category: str) -> list:
         # 剔除撇号/引号/分号等，避免截断词（如 women'）或恶意输入破坏 LIKE 拼接的语法。
         # 净化后撇号已无，原有的 '' 双写转义不再需要。
         kw = re.sub(r"[^\w一-鿿 ]", "", category)[:6]
+        # 参数化：用户输入经 ? 绑定，不再拼进 SQL 字符串
         r = executor.execute(
-            f"SELECT product_name, category, unit_price FROM products "
-            f"WHERE is_active=1 AND (category LIKE '%{kw}%' "
-            f"OR product_name LIKE '%{kw}%') LIMIT 5"
+            "SELECT product_name, category, unit_price FROM products "
+            "WHERE is_active=1 AND (category LIKE ? OR product_name LIKE ?) LIMIT 5",
+            (f"%{kw}%", f"%{kw}%"),
         )
         # executor 出错时 data 可能为 None，降级为 []，遵守 -> list 契约
         return r.get("data") or []

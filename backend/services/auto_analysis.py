@@ -137,14 +137,14 @@ class AutoAnalyzer:
         analyzed_products = []
         for prod in (underperforming.get("data") or [])[:5]:
             # 获取该产品的差评详情
-            bad_reviews = executor.execute(f"""
+            bad_reviews = executor.execute("""
                 SELECT pr.rating, pr.review_text, pr.review_date
                 FROM product_reviews pr
                 JOIN products p ON pr.product_id=p.product_id
-                WHERE p.product_name = '{prod['product_name'].replace("'","''")}'
+                WHERE p.product_name = ?
                   AND pr.sentiment = '差评'
                 ORDER BY pr.rating ASC LIMIT 5
-            """)
+            """, (prod["product_name"],))
 
             # 调LLM分析
             analysis = self._analyze_product(

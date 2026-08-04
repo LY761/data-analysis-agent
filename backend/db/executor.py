@@ -31,8 +31,9 @@ class SQLExecutor:
             return False, "仅允许 SELECT 查询语句。"
         return True, "OK"
 
-    def execute(self, sql: str) -> dict:
-        """执行只读SQL查询，返回结构化结果"""
+    def execute(self, sql: str, params: tuple = None) -> dict:
+        """执行只读SQL查询，返回结构化结果。
+        params: 参数化占位符（?）的绑定值 — 调用方拼接用户输入时应优先传参。"""
         # 第一步：安全检查
         is_safe, reason = self._is_read_only(sql)
         if not is_safe:
@@ -52,7 +53,7 @@ class SQLExecutor:
             # 设置查询超时
             conn.execute(f"PRAGMA query_timeout = {QUERY_TIMEOUT_SEC * 1000}")
 
-            cursor.execute(sql)
+            cursor.execute(sql, params or ())
             rows = cursor.fetchall()
 
             # 空结果处理
@@ -141,10 +142,10 @@ class ExecutorProxy:
         else:
             raise ValueError(f"不支持的数据库类型: {db_type}")
 
-    def execute(self, sql: str) -> dict:
+    def execute(self, sql: str, params: tuple = None) -> dict:
         if self._backend == "mysql":
-            return self._mysql_executor.execute(sql)
-        return self._sqlite_executor.execute(sql)
+            return self._mysql_executor.execute(sql, params)
+        return self._sqlite_executor.execute(sql, params)
 
 
 # 全局单例（代理，默认 SQLite；DB_TYPE=mysql 或运行时切换后走 MySQL）

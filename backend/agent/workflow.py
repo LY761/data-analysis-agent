@@ -505,14 +505,14 @@ def _analyze_why(question: str, sql: str, query_result: dict, schema_context: di
     reviews_text = ""
     try:
         for name in product_names[:3]:
-            r = db_exec.execute(f"""
+            r = db_exec.execute("""
                 SELECT pr.rating, pr.review_text, pr.sentiment
                 FROM product_reviews pr
                 JOIN products p ON pr.product_id = p.product_id
-                WHERE p.product_name = '{name.replace(chr(39), chr(39)+chr(39))}'
+                WHERE p.product_name = ?
                   AND pr.sentiment IN ('差评','中评')
                 ORDER BY pr.rating ASC LIMIT 3
-            """)
+            """, (name,))
             for rev in (r.get("data") or [])[:2]:
                 reviews_text += f"\n[{name}] {rev.get('rating','')}星: {rev.get('review_text','')[:100]}"
     except Exception:
@@ -584,7 +584,8 @@ def _find_similar_products(question: str, sql: str) -> list:
     for kw in keywords[:3]:
         try:
             r = executor.execute(
-                f"SELECT product_name, category FROM products WHERE product_name LIKE '%{kw.replace(chr(39),chr(39)+chr(39))}%' LIMIT 5"
+                "SELECT product_name, category FROM products WHERE product_name LIKE ? LIMIT 5",
+                (f"%{kw}%",),
             )
             for item in (r.get("data") or []):
                 if item["product_name"] not in suggestions:
