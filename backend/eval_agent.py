@@ -71,6 +71,7 @@ async def evaluate(questions) -> list:
             "id": q["id"], "question": q["question"], "category": q["category"],
             "expect_mode": q["expect_mode"], "actual_mode": route.get("mode"),
             "expect_data": q.get("expect_data"),
+            "expect_sql_frag": q.get("expect_sql_frag"),
         }
         # expect_mode 支持 "|" 分隔的合法模式集合（如 sql_query|quick_card）
         expect_set = set(q["expect_mode"].split("|"))
