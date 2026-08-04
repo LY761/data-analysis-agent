@@ -3,6 +3,7 @@
 说明：DDG HTML 端点对自动化请求返回 202 反爬；Amazon 搜索页 s?k= 用
 curl_cffi 的 Chrome TLS 指纹请求（实测能拿到大量真实产品 ASIN）。
 """
+import re
 from curl_cffi import requests as cr
 from bs4 import BeautifulSoup
 
@@ -41,7 +42,32 @@ def search_products(query: str, limit: int = 15) -> list[dict]:
         title = title_el.get_text(strip=True) if title_el else ""
         if not title:
             continue
-        results.append({"title": title, "url": f"https://www.amazon.com/dp/{asin}", "snippet": ""})
+        # 价格（a-price-whole 整数部分）
+        price = None
+        p_el = card.select_one("span.a-price-whole")
+        if p_el:
+            raw = "".join(p_el.find_all(string=True, recursive=False)).replace(",", "")
+            m2 = re.search(r"\d+\.?\d*", raw)
+            if m2:
+                price = float(m2.group(0))
+        # 评分
+        rating = None
+        r_el = card.select_one("span.a-icon-alt")
+        if r_el:
+            m3 = re.search(r"([\d.]+)", r_el.get_text())
+            if m3:
+                rating = float(m3.group(1))
+        # 摘要 snippet（优先商品摘要组件，兜底标题下方文本）
+        snippet = ""
+        sn = card.select_one("div[data-component-type='s-product-snippet']")
+        if sn:
+            snippet = sn.get_text(" ", strip=True)[:120]
+        if not snippet:
+            sn2 = card.select_one("span.a-size-base-plus.a-color-base")
+            if sn2:
+                snippet = sn2.get_text(strip=True)[:120]
+        results.append({"title": title, "url": f"https://www.amazon.com/dp/{asin}",
+                        "snippet": snippet, "price": price, "rating": rating})
         if len(results) >= limit:
             break
     return results

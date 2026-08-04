@@ -2,6 +2,7 @@
 供 market_intelligence 与 competitor_analysis 共用。
 依赖: curl_cffi（Chrome TLS 指纹，对抗 Amazon 反爬）, bs4"""
 import re
+import time
 from curl_cffi import requests as cr
 from bs4 import BeautifulSoup
 
@@ -48,20 +49,62 @@ def extract_amazon_product(url: str, html: str) -> dict:
         if m:
             reviews = int(m.group(1).replace(",", ""))
 
+    # 品牌（"Visit the Anker Store" → "Anker"）
+    brand = ""
+    b = soup.select_one("#bylineInfo")
+    if b:
+        brand = (b.get_text(strip=True)
+                 .replace("Visit the", "").replace("Store", "").strip())[:40]
+
+    # 库存状态（"In Stock" / "仅剩3件"）
+    availability = ""
+    a = soup.select_one("#availability")
+    if a:
+        availability = a.get_text(" ", strip=True)[:60]
+
+    # 核心卖点 bullet points
+    features = []
+    for li in soup.select("#feature-bullets li")[:8]:
+        t = li.get_text(" ", strip=True)
+        if t and len(t) > 3:
+            features.append(t)
+
+    # 主图
+    image_url = ""
+    img = soup.select_one("#landingImage")
+    if img:
+        image_url = img.get("src") or img.get("data-old-hires") or ""
+
+    # ASIN（从 URL /dp/XXXXXXXXXX 提取）
+    asin = ""
+    m = re.search(r"/dp/([A-Z0-9]{10})", url or "")
+    if m:
+        asin = m.group(1)
+
     return {"title": title, "price": price, "rating": rating,
-            "review_count": reviews, "url": url}
+            "review_count": reviews, "url": url, "brand": brand,
+            "availability": availability, "features": features,
+            "image_url": image_url, "asin": asin}
 
 
 def scrape_product(url: str) -> dict:
-    """抓取单个 Amazon 产品页。用 curl_cffi 的 Chrome TLS 指纹对抗反爬。失败返回空字段 dict，不抛异常。"""
-    try:
-        resp = cr.get(url, headers=HEADERS, impersonate="chrome",
-                      timeout=20, allow_redirects=True)
-        if resp.status_code == 200:
-            return extract_amazon_product(url, resp.text)
-    except Exception:
-        pass
-    return {"title": "", "price": None, "rating": None, "review_count": None, "url": url}
+    """抓取单个 Amazon 产品页。用 curl_cffi 的 Chrome TLS 指纹对抗反爬。
+    网络失败/非200 自动重试 1 次（间隔1.5s）。失败返回空字段 dict，不抛异常。"""
+    import time
+    empty = {"title": "", "price": None, "rating": None, "review_count": None,
+             "url": url, "brand": "", "availability": "", "features": [],
+             "image_url": "", "asin": ""}
+    for attempt in range(2):
+        try:
+            resp = cr.get(url, headers=HEADERS, impersonate="chrome",
+                          timeout=20, allow_redirects=True)
+            if resp.status_code == 200:
+                return extract_amazon_product(url, resp.text)
+        except Exception:
+            pass
+        if attempt == 0:
+            time.sleep(1.5)
+    return empty
 
 
 # ═══════════════════════════════════════════════════════
@@ -108,8 +151,25 @@ def scrape_jd_product(url: str) -> dict:
             if not title and "passport" in str(getattr(p, "url", "")):
                 return {"title": "", "price": None, "rating": None,
                         "review_count": None, "url": url}
-            return {"title": title, "price": price, "rating": None,
-                    "review_count": None, "url": url}
+            # 评分/评论数：京东 2026 改版后标记不稳定，尽力从常见标记提取，失败保持 None
+            rating = None
+            for sel in (".summaryScore", ".score", ".rating-num"):
+                t = p.css(sel + "::text").get()
+                if t:
+                    m = re.search(r"([\d.]+)", t)
+                    if m:
+                        rating = float(m.group(1))
+                        break
+            reviews = None
+            for sel in (".comment-count", "#comment-count", ".total-comments"):
+                t = p.css(sel + "::text").get()
+                if t:
+                    m = re.search(r"([\d,]+)", t)
+                    if m:
+                        reviews = int(m.group(1).replace(",", ""))
+                        break
+            return {"title": title, "price": price, "rating": rating,
+                    "review_count": reviews, "url": url}
     except Exception:
         pass
     return {"title": "", "price": None, "rating": None, "review_count": None, "url": url}
