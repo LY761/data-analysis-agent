@@ -3,7 +3,7 @@ SQL执行器 — 带安全控制的只读SQL执行引擎
 """
 import sqlite3
 import time
-from config import DEMO_DB_PATH, MAX_RESULT_ROWS, QUERY_TIMEOUT_SEC
+from config import DEMO_DB_PATH, MAX_RESULT_ROWS, QUERY_TIMEOUT_SEC, DB_TYPE
 
 
 class SQLExecutor:
@@ -106,5 +106,46 @@ class SQLExecutor:
                 conn.close()
 
 
-# 全局单例
-executor = SQLExecutor()
+class ExecutorProxy:
+    """后端代理：按当前激活数据库类型分发执行。
+
+    - 默认按 config.DB_TYPE 决定（sqlite / mysql）
+    - connection_manager.switch_database() 切换时调用 set_backend()
+    - 所有 `from db.executor import executor` 的调用方无需改动
+    """
+
+    def __init__(self):
+        self._backend = "sqlite"
+        self._sqlite_executor = SQLExecutor(DEMO_DB_PATH)
+        self._mysql_executor = None
+        if DB_TYPE == "mysql":
+            self.set_backend("mysql")
+
+    @property
+    def backend(self) -> str:
+        return self._backend
+
+    def set_backend(self, db_type: str, path_or_url: str = None):
+        """切换执行后端：sqlite（可带新文件路径）或 mysql（可带连接URL）"""
+        db_type = (db_type or "").lower()
+        if db_type == "sqlite":
+            self._backend = "sqlite"
+            self._sqlite_executor = SQLExecutor(path_or_url or DEMO_DB_PATH)
+        elif db_type == "mysql":
+            from db.mysql_executor import MySQLExecutor
+            if self._mysql_executor is None:
+                self._mysql_executor = MySQLExecutor()
+            if path_or_url:
+                self._mysql_executor.set_connection_url(path_or_url)
+            self._backend = "mysql"
+        else:
+            raise ValueError(f"不支持的数据库类型: {db_type}")
+
+    def execute(self, sql: str) -> dict:
+        if self._backend == "mysql":
+            return self._mysql_executor.execute(sql)
+        return self._sqlite_executor.execute(sql)
+
+
+# 全局单例（代理，默认 SQLite；DB_TYPE=mysql 或运行时切换后走 MySQL）
+executor = ExecutorProxy()

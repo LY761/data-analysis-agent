@@ -11,8 +11,60 @@ from config import DEMO_DB_PATH
 random.seed(42)
 
 
-def get_schema_descriptions():
-    """返回完整Schema（中文描述），供Schema检索器索引"""
+def _mysql_schema_descriptions(url: str) -> list:
+    """从 MySQL information_schema 动态生成 Schema 描述（表/列/主键/注释）"""
+    import pymysql
+    import urllib.parse
+    u = urllib.parse.urlparse(url)
+    conn = pymysql.connect(host=u.hostname, port=u.port or 3306,
+                           user=u.username, password=u.password,
+                           database=u.path.lstrip("/"), charset="utf8mb4")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT table_name, column_name, column_type, column_key, column_comment
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                ORDER BY table_name, ordinal_position
+            """)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    by_table = {}
+    for t, c, typ, key, comment in rows:
+        by_table.setdefault(t, []).append((c, typ, key, comment or ""))
+
+    result = []
+    for table, cols in by_table.items():
+        col_lines = []
+        col_list = []
+        for c, typ, key, comment in cols:
+            pk = " PRIMARY KEY" if key == "PRI" else ""
+            col_lines.append(f"    {c} {typ}{pk} COMMENT '{comment}'")
+            col_list.append({"name": c, "type": typ, "comment": comment})
+        ddl = "CREATE TABLE " + table + " (\n" + ",\n".join(col_lines) + "\n);"
+        result.append({
+            "table": table,
+            "ddl": ddl,
+            "description": f"表 {table}：包含列 " + "、".join(c for c, *_ in cols[:12]) + " 等",
+            "columns": col_list,
+            "sample_queries": [],
+        })
+    return result
+
+
+def get_schema_descriptions(db_type: str = "sqlite", path_or_url: str = "") -> list:
+    """返回完整Schema（中文描述），供Schema检索器索引。
+    - sqlite: 演示库硬编码 Schema
+    - mysql: 从 information_schema 动态发现（需传 path_or_url=连接URL）
+    """
+    if db_type == "mysql" and path_or_url:
+        try:
+            return _mysql_schema_descriptions(path_or_url)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"[Schema] MySQL Schema 发现失败，回退演示Schema: {e}")
     return [
         {
             "table": "products",

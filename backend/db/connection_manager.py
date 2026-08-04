@@ -83,16 +83,23 @@ def switch_database(key: str) -> dict:
     _current_db = key
     conn = _connections[key]
 
-    # 更新 executor 的数据库路径
-    from config import DEMO_DB_PATH
+    # 更新执行器后端 — 关键：让查询真正走到对应数据库
+    from db.executor import executor
     import config
     if conn["db_type"] == "sqlite":
         config.DEMO_DB_PATH = conn["path_or_url"]
+        executor.set_backend("sqlite", conn["path_or_url"])
+    elif conn["db_type"] == "mysql":
+        executor.set_backend("mysql", conn["path_or_url"])
+    elif conn["db_type"] == "postgresql":
+        # 连接可注册/可发现表，但查询执行暂未实现（不假装支持）
+        return {"error": "PostgreSQL 查询执行暂未实现，仅支持连接注册。请使用 SQLite 或 MySQL。",
+                "current": key, "label": conn["label"]}
 
     # 重新索引 Schema
-    _reindex_current_schema()
+    _reindex_current_schema(conn["db_type"], conn["path_or_url"])
 
-    logger.info(f"[DB Manager] 已切换到: {conn['label']}")
+    logger.info(f"[DB Manager] 已切换到: {conn['label']} (backend={executor.backend})")
     return {"ok": True, "current": key, "label": conn["label"], "tables": conn["tables"]}
 
 
@@ -206,12 +213,12 @@ def _discover_tables(db_type: str, path_or_url: str) -> list:
     return tables
 
 
-def _reindex_current_schema():
-    """切换数据库后重新索引Schema"""
+def _reindex_current_schema(db_type: str = "sqlite", path_or_url: str = ""):
+    """切换数据库后重新索引Schema（按后端类型动态发现）"""
     try:
         from agent.schema_retriever import schema_retriever
         from db.init_db import get_schema_descriptions
-        schemas = get_schema_descriptions()
+        schemas = get_schema_descriptions(db_type, path_or_url)
         schema_retriever.index_schemas(schemas, force=True)
         logger.info("[DB Manager] Schema已重新索引")
     except Exception as e:
