@@ -1,6 +1,9 @@
 """
 图表推荐器 — 根据查询结果的数据特征自动推荐最佳图表类型
 """
+import re
+
+
 class ChartRecommender:
     """分析查询结果的列类型和行数，推荐图表类型并输出ECharts配置"""
 
@@ -32,8 +35,9 @@ class ChartRecommender:
                 continue
             sample = sample_values[0]
             if isinstance(sample, str):
-                # 判断是否像日期列
-                if any(kw in col.lower() for kw in ("date", "time", "日期", "时间", "月份")):
+                # 判断是否像日期列：列名关键词 或 值符合日期格式（2026-01 / 2026年1月）
+                if (any(kw in col.lower() for kw in ("date", "time", "日期", "时间", "月份"))
+                        or re.match(r"^\d{4}[-/年]\d{1,2}", sample.strip())):
                     date_cols.append(col)
                 else:
                     text_cols.append(col)
@@ -63,6 +67,13 @@ class ChartRecommender:
                 chart_type = "bar"
                 reason = f"共{row_count}个分类，推荐柱状图进行对比（自动排序）。"
                 echarts_option = _build_bar_chart(data, text_cols[0], numeric_cols, columns)
+
+        # 有分类+数值+行数多（>20） → Top15 柱状图（避免表格过宽）
+        elif text_cols and numeric_cols:
+            chart_type = "bar"
+            top = data[:15]
+            reason = f"共{row_count}个分类，取前15展示柱状图（数据量较大）。"
+            echarts_option = _build_bar_chart(top, text_cols[0], numeric_cols, columns)
 
         # 多指标+少行数 → 分组柱状图
         elif len(numeric_cols) >= 2 and row_count <= 5:

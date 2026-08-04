@@ -385,7 +385,9 @@ async def execute_sql_node(state: WorkflowState) -> WorkflowState:
     chart_rec = {"chart_type": None, "reason": "非可视化查询"}
     viz_keywords = ["画图", "画个图", "生成图", "可视化", "柱状图", "饼图", "折线图",
                     "趋势图", "做图", "出图", "绘", "图表展示", "图表",
-                    "对比", "比较", "占比", "排名", "排行", "分布", "走势"]
+                    "对比", "比较", "占比", "排名", "排行", "分布", "走势",
+                    "趋势", "每月", "每日", "每周", "各月", "同比", "环比",
+                    "增长", "下降", "变化", "走势图"]
     original_q = state.get("original_question") or state.get("question", "")
     if any(kw in original_q for kw in viz_keywords):
         chart_rec = chart_recommender.recommend(query_result)
