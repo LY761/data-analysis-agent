@@ -5,6 +5,7 @@ import json
 import uuid
 import hashlib
 import asyncio
+import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from agent.workflow import app_workflow
@@ -15,6 +16,11 @@ from services.data_masking import mask_result
 from services.retrieval_metrics import RetrievalSpan
 # 快捷查询服务（别名导入，避免与端点函数名 run_quick_query 冲突）
 from services.quick_queries import run_quick_query as run_quick_query_service, get_quick_query_list
+# 竞品分析（真实实现见 agent/competitor_analysis/analyzer.py）
+from agent.competitor_analysis import analyze_competitor
+from agent.competitor_analysis.analyzer import analyzer
+# 查询缓存（SQLite，TTL 5分钟）— 顶部导入，修复端点作用域内 NameError 导致的缓存静默失效
+from cache.query_cache import get_cached_result, set_cached_result
 
 router = APIRouter()
 
@@ -847,7 +853,7 @@ async def competitor_analyze(request: CompetitorAnalyzeRequest):
       Stage 4: 内部SQL数据对比
       Stage 5: LLM战略报告生成
 
-    返回: 结构化JSON + Markdown报告 + ECharts配置
+    返回: {found, name, analysis, data_sources, internal_summary, error, trace_id}
     """
     trace_id = uuid.uuid4().hex[:12]
 
@@ -858,7 +864,7 @@ async def competitor_analyze(request: CompetitorAnalyzeRequest):
             "trace_id": trace_id,
         }
 
-    # 缓存检查
+    # 缓存检查（5分钟 TTL）
     if not getattr(request, 'force_refresh', False):
         try:
             cache_key = f"competitor:{request.company_name}:{request.include_internal}"
@@ -870,45 +876,26 @@ async def competitor_analyze(request: CompetitorAnalyzeRequest):
         except Exception:
             pass
 
+    # 真实流水线（agent/competitor_analysis/analyzer.py）：
+    # 匹配已知竞品 → 加载本地竞品JSON → 内部SQL对比 → 差评 → LLM洞察
+    t0 = time.time()
+    result = await asyncio.to_thread(analyze_competitor, request.company_name, None)
 
-    result = await run_competitor_pipeline(
-        company_name=request.company_name,
-        competitor_url=request.competitor_url,
-        include_internal=request.include_internal,
-        category=request.category,
-    )
-
-    # 构建响应
     response = {
         "company_name": request.company_name,
-        "scraped_data": {
-            "homepage": result.get("raw_data", {}).get("homepage", {}),
-            "products": result.get("raw_data", {}).get("products", []),
-            "pricing": result.get("raw_data", {}).get("pricing", {}),
-            "blog": result.get("raw_data", {}).get("blog", {}),
-        },
-        "parsed_dimensions": result.get("parsed_data", {}).get("dimensions", {}),
-        "analysis": {
-            "scores": result.get("analysis", {}).get("scores", {}),
-            "ranking": result.get("analysis", {}).get("ranking", []),
-            "swot": result.get("analysis", {}).get("swot", {}),
-            "comparison_table": result.get("analysis", {}).get("comparison_table", []),
-        },
-        "internal_comparison": {
-            "comparisons": result.get("internal_comparison", {}).get("comparisons", []),
-            "chart": result.get("internal_comparison", {}).get("chart", {}),
-        },
-        "llm_report": result.get("llm_report", ""),
-        "chart": result.get("internal_comparison", {}).get("chart", {}),
-        "execution_time_ms": result.get("execution_time_ms", 0),
-        "stage_errors": result.get("stage_errors", {}),
+        "found": result.get("found", False),
+        "name": result.get("name", request.company_name),
+        "analysis": result.get("analysis", ""),
+        "data_sources": result.get("data_sources", []),
+        "internal_summary": result.get("internal_summary", {}),
+        "execution_time_ms": int((time.time() - t0) * 1000),
         "cache_hit": False,
         "error": result.get("error"),
         "trace_id": trace_id,
     }
 
-    # 写入缓存
-    if not result.get("error"):
+    # 写入缓存（仅找到竞品数据时）
+    if result.get("found"):
         try:
             cache_key = f"competitor:{request.company_name}:{request.include_internal}"
             set_cached_result(cache_key, "competitor_v1", response)
@@ -918,10 +905,10 @@ async def competitor_analyze(request: CompetitorAnalyzeRequest):
     return response
 
 
-@router.post("/competitor/analyze/ws")
+@router.websocket("/competitor/analyze/ws")
 async def competitor_analyze_ws(websocket: WebSocket):
     """
-    竞品分析 WebSocket 流式接口 — 逐步推送5个阶段的进度
+    竞品分析 WebSocket 流式接口 — 状态推送 + LLM 报告逐token流式输出
     """
     await websocket.accept()
 
@@ -934,58 +921,42 @@ async def competitor_analyze_ws(websocket: WebSocket):
             await websocket.send_json({"type": "error", "message": "请提供竞品公司名称"})
             return
 
-        stage_messages = {
-            "scrape_competitor": "正在抓取竞品官网（首页+产品+定价）...",
-            "parse_dimensions": "正在解析7个竞争维度...",
-            "analyze_competitor": "正在评分+SWOT分析...",
-            "compare_internal": "正在查询内部销售数据并对比...",
-            "generate_report": "LLM正在生成战略分析报告...",
-        }
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
 
+        def stream_cb(delta: str):
+            # 工作线程（to_thread）→ 事件循环 → 队列，与 /api/query/stream 同模式
+            loop.call_soon_threadsafe(lambda: queue.put_nowait(("delta", delta)))
 
-        initial_state: CompetitorPipelineState = {
-            "company_name": company_name,
-            "competitor_url": request.get("competitor_url", ""),
-            "include_internal": request.get("include_internal", True),
-            "category": request.get("category", ""),
-            "raw_data": {},
-            "parsed_data": {},
-            "analysis": {},
-            "ranking": [],
-            "swot": {},
-            "internal_comparison": {},
-            "llm_report": "",
-            "execution_time_ms": 0,
-            "error": "",
-            "stage_errors": {},
-        }
+        await websocket.send_json({
+            "type": "status",
+            "message": "正在加载竞品数据并对比内部销售...",
+        })
 
-        final = {}
-        async for event in competitor_graph.astream_events(initial_state, version="v2"):
-            kind = event.get("event", "")
-            node_name = event.get("metadata", {}).get("langgraph_node", "")
+        task = asyncio.create_task(
+            asyncio.to_thread(analyze_competitor, company_name, stream_cb)
+        )
+        while True:
+            while not queue.empty():
+                _, delta = queue.get_nowait()
+                await websocket.send_json({"type": "delta", "delta": delta})
+            if task.done():
+                break
+            await asyncio.sleep(0.03)
+        while not queue.empty():
+            _, delta = queue.get_nowait()
+            await websocket.send_json({"type": "delta", "delta": delta})
 
-            if kind == "on_chain_start" and node_name in stage_messages:
-                await websocket.send_json({
-                    "type": "status",
-                    "stage": node_name,
-                    "message": stage_messages[node_name],
-                })
-
-            if kind == "on_chain_end" and node_name == "generate_report":
-                output = event.get("data", {}).get("output", {})
-                final = output
-
+        result = task.result()
         await websocket.send_json({
             "type": "result",
             "data": {
                 "company_name": company_name,
-                "llm_report": final.get("llm_report", ""),
-                "analysis": final.get("analysis", {}),
-                "internal_comparison": final.get("internal_comparison", {}),
-                "execution_time_ms": final.get("execution_time_ms", 0),
-                "stage_errors": final.get("stage_errors", {}),
-                "error": final.get("error"),
+                "name": result.get("name", company_name),
+                "found": result.get("found", False),
+                "analysis": result.get("analysis", ""),
+                "internal_summary": result.get("internal_summary", {}),
+                "error": result.get("error"),
             },
         })
         await websocket.send_json({"type": "done"})
@@ -993,7 +964,10 @@ async def competitor_analyze_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        await websocket.send_json({"type": "error", "message": str(e)})
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
 
 
 # ================================================================
@@ -1019,11 +993,7 @@ async def list_competitors():
     # analyzer is the singleton instance
     return {"competitors": analyzer.list_competitors()}
 
-@router.post("/competitor/analyze")
-async def analyze_competitor_endpoint(name: str = ""):
-    """分析指定竞品"""
-    result = analyze_competitor(name)
-    return result
+
 
 
 # ================================================================
