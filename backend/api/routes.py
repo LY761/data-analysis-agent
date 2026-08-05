@@ -386,6 +386,10 @@ async def query_stream(request: QueryRequest):
         session_id = request.session_id or f"stream-{trace_id}"
         set_current_session(session_id)
 
+        # 检索质量监控：流式路径同样记录指标（此前缺失 → 看板永远无数据）
+        from config import DEMO_DB_PATH as _demo_db_path
+        retrieval_span = RetrievalSpan(effective_question, _demo_db_path)
+
         initial_state: WorkflowState = {
             "question": effective_question,
             "original_question": request.original_question or request.question,
@@ -411,6 +415,7 @@ async def query_stream(request: QueryRequest):
             "error": None,
             "progress_cb": progress_cb,
             "stream_answer_cb": stream_answer_cb,
+            "retrieval_span": retrieval_span,
         }
 
         task = asyncio.create_task(app_workflow.ainvoke(initial_state))
@@ -429,9 +434,20 @@ async def query_stream(request: QueryRequest):
             final_state = task.result()
             final = final_state.get("final_response", {})
         except Exception as e:
+            # 失败也落库一条指标（execute_sql 未执行时兜底）
+            try:
+                retrieval_span.flush()
+            except Exception:
+                pass
             yield sse("error", {"message": f"查询失败: {e}"})
             yield sse("done", {})
             return
+
+        # 成功路径兜底 flush（execute_sql 已 flush 则幂等跳过）
+        try:
+            retrieval_span.flush()
+        except Exception:
+            pass
 
         response_data = {
             "question": final.get("original_question") or final.get("question", ""),

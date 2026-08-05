@@ -12,7 +12,9 @@ client = TestClient(main.app)
 
 def _clear_metric_logs():
     conn = sqlite3.connect(DEMO_DB_PATH)
-    conn.execute("DELETE FROM retrieval_log WHERE question LIKE 'g1_%'")
+    conn.execute("DELETE FROM retrieval_log")
+    # 缓存命中路径不创建 span、不落库 —— 测试必须清缓存避免污染
+    conn.execute("DELETE FROM query_cache")
     conn.commit()
     conn.close()
 
@@ -44,3 +46,19 @@ def test_query_failure_still_logs_metrics():
     ).fetchone()[0]
     conn.close()
     assert n == 1, f"retrieval_log 未落库（响应: {r.json().get('error')}）"
+
+
+def test_query_stream_writes_metrics():
+    """前端聊天实际走 /api/query/stream（SSE）——该路径也必须落库检索指标"""
+    _clear_metric_logs()
+    # 无 LLM 环境会失败，但兜底 flush 应保证落库一条
+    r = client.post("/api/query/stream",
+                    json={"question": "g_stream_指标测试-哪个供应商的订单最多"})
+    assert r.status_code == 200
+    _ = r.text  # 消费 SSE 流（触发完整执行）
+    conn = sqlite3.connect(DEMO_DB_PATH)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM retrieval_log WHERE question LIKE 'g_stream_指标测试%'"
+    ).fetchone()[0]
+    conn.close()
+    assert n == 1, "流式查询未落库指标"
