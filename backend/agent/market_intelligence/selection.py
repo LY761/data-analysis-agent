@@ -71,6 +71,17 @@ def analyze_selection(category: str, llm_client=None, stream_cb=None) -> dict:
         scraped = [scrape_product(p["url"]) for p in products]
         scraped = [s for s in scraped if s.get("title")]
 
+        # 数据门槛：无真实数据时绝不输出推断结论（宁可明确报错+引导）
+        if not scraped:
+            progress("未获取到任何商品数据")
+            return {
+                "category": category, "products": [], "profile": "",
+                "internal": [], "recommendation": {},
+                "error": "未获取到任何真实商品数据（爬虫被拦截或网络异常）。"
+                         "请改用【📋 粘贴数据分析】粘贴你看到的真实商品信息，"
+                         "或检查网络后重试。无真实数据时不再生成推断结论。",
+            }
+
         progress("正在分析价格分布和竞争格局...")
         profile = _call_llm(client, [
             {"role": "system", "content": "你是电商选品分析师。"},

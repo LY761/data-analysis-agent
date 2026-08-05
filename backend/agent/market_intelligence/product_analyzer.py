@@ -35,12 +35,16 @@ def analyze_product(query: str, llm_client=None, stream_cb=None) -> dict:
             found = search_products(query, limit=3)
             if not found:
                 return {"query": query, "product": {}, "sellpoints": "", "pains": "",
-                        "internal": [], "suggestions": "", "error": "未找到该产品"}
+                        "internal": [], "suggestions": "",
+                        "error": "未找到该产品（搜索被拦截或无结果）。"
+                                 "请改用【📋 粘贴数据分析】粘贴真实商品链接或信息。"}
             product = scrape_product(found[0]["url"])
 
         if not product.get("title"):
             return {"query": query, "product": product, "sellpoints": "", "pains": "",
-                    "internal": [], "suggestions": "", "error": "抓取失败"}
+                    "internal": [], "suggestions": "",
+                    "error": "商品页抓取失败（可能被反爬拦截）。"
+                             "请改用【📋 粘贴数据分析】粘贴真实商品链接或信息。"}
 
         progress(f"正在提取「{product['title'][:30]}」的卖点...")
         sellpoints = _call_llm(client, [
