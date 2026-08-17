@@ -181,73 +181,97 @@ class AuthMiddleware(BaseHTTPMiddleware):
       5. 放行请求
     """
 
-    # 不需要认证的路径
-    PUBLIC_PATHS = [
+    PUBLIC_EXACT_PATHS = {
         "/api/login",
         "/api/register",
         "/api/health",
-        "/docs",
         "/openapi.json",
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
         "/",
-    ]
+        "/index.html",
+    }
+    PUBLIC_PREFIXES = ("/api/integrations/v1",)
+
+    @classmethod
+    def _is_public_path(cls, path: str) -> bool:
+        if not path.startswith("/api/"):
+            return True
+        return path in cls.PUBLIC_EXACT_PATHS or any(
+            path == prefix or path.startswith(prefix + "/")
+            for prefix in cls.PUBLIC_PREFIXES
+        )
 
     async def dispatch(self, request: Request, call_next):
         from config import AUTH_ENABLED
 
-        # Demo模式：跳过认证，所有请求直接放行
         if not AUTH_ENABLED:
-            return await call_next(request)
+            context_token = current_user_ctx.set({
+                "user_id": "demo-user",
+                "tenant_id": "default",
+                "username": "demo",
+                "role": "admin",
+                "permissions": {"databases": ["*"], "tables": ["*"]},
+            })
+            try:
+                return await call_next(request)
+            finally:
+                current_user_ctx.reset(context_token)
+
         path = request.url.path
-        if any(path.startswith(p) for p in self.PUBLIC_PATHS):
+        if self._is_public_path(path):
             return await call_next(request)
 
-        # 提取Token
         token = None
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
-
         api_key = request.headers.get("X-API-Key", "")
 
-        # 验证
         user = None
         if token:
             from auth.jwt_handler import validate_token
             user = validate_token(token)
         elif api_key:
-            from auth.jwt_handler import validate_api_key
+            from auth.jwt_handler import User, validate_api_key
             key_info = validate_api_key(api_key)
             if key_info:
-                from auth.jwt_handler import User
                 user = User(
                     user_id=key_info["user_id"],
                     username=f"api:{api_key[:8]}",
-                    role="api",
+                    role=key_info.get("role", "api"),
                     permissions=key_info.get("permissions", {}),
                 )
 
         if not user:
             return JSONResponse(
                 status_code=401,
-                content={"error": "未登录或Token已过期", "code": "UNAUTHORIZED"},
+                content={
+                    "ok": False,
+                    "error": {"code": "AUTH_UNAUTHORIZED", "message": "未登录或凭证已过期"},
+                },
             )
 
-        # 速率限制
         allowed, reason = rate_limiter.check(user.user_id)
         if not allowed:
             return JSONResponse(
                 status_code=429,
-                content={"error": reason, "code": "RATE_LIMITED",
-                         "remaining": rate_limiter.get_remaining(user.user_id)},
+                content={
+                    "ok": False,
+                    "error": {"code": "RATE_LIMITED", "message": reason, "retryable": True},
+                    "meta": {"remaining": rate_limiter.get_remaining(user.user_id)},
+                },
             )
 
-        # 注入用户上下文
-        current_user_ctx.set({
+        context_token = current_user_ctx.set({
             "user_id": user.user_id,
+            "tenant_id": user.permissions.get("tenant_id", "default"),
             "username": user.username,
             "role": user.role,
             "permissions": user.permissions,
         })
-
-        response = await call_next(request)
-        return response
+        try:
+            return await call_next(request)
+        finally:
+            current_user_ctx.reset(context_token)

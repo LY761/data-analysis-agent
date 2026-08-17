@@ -6,88 +6,90 @@ import uuid
 import hashlib
 import asyncio
 import time
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File
-from pydantic import BaseModel
+from fastapi import APIRouter, UploadFile, File
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from agent.workflow import app_workflow
 from agent.workflow import WorkflowState
-from agent.conversation_memory import get_session, set_current_session, get_history_summary, search_all_history
+from agent.conversation_memory import (
+    _ensure_table,
+    get_session,
+    set_current_session,
+    get_history_summary,
+    search_all_history,
+)
 from db.executor import executor
 from services.data_masking import mask_result
 from services.retrieval_metrics import RetrievalSpan
 # 快捷查询服务（别名导入，避免与端点函数名 run_quick_query 冲突）
 from services.quick_queries import run_quick_query as run_quick_query_service, get_quick_query_list
-# 竞品分析（真实实现见 agent/competitor_analysis/analyzer.py）
-from agent.competitor_analysis import analyze_competitor
-from agent.competitor_analysis.analyzer import analyzer
 # 查询缓存（SQLite，TTL 5分钟）— 顶部导入，修复端点作用域内 NameError 导致的缓存静默失效
 from cache.query_cache import get_cached_result, set_cached_result
 
 router = APIRouter()
 
 
+def _build_cache_scope() -> dict:
+    from config import LLM_MODEL
+    from db.connection_manager import get_current_db
+    from middleware.auth_middleware import current_user_ctx
+
+    user = current_user_ctx.get() or {}
+    database = get_current_db() or {}
+    permissions = user.get("permissions", {})
+    permission_hash = hashlib.sha256(
+        json.dumps(permissions, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()[:12]
+    return {
+        "tenant_id": user.get("tenant_id", "default"),
+        "user_id": user.get("user_id", "anonymous"),
+        "permission_hash": permission_hash,
+        "database": database.get("key", "demo"),
+        "model": LLM_MODEL,
+        "prompt_version": "nl2sql-v1",
+    }
+
+
 class QueryRequest(BaseModel):
-    question: str
-    session_id: str = ""
+    question: str = Field(..., min_length=1, max_length=2000)
+    session_id: str = Field("", max_length=128)
     force_refresh: bool = False
     # 澄清对话支持
     is_clarification: bool = False          # 这条消息是对反问的回答
     original_question: str = ""             # 原始模糊问题
-    clarification_history: list = []        # 之前的澄清对话
+    clarification_history: list = Field(default_factory=list)        # 之前的澄清对话
 
 
 class QueryResponse(BaseModel):
     question: str
-    # 聊天模式
-    chat_reply: str = ""                   # 聊天/知识问答的直接回复
+    # 直接回复模式
+    chat_reply: str = ""                   # 问候、帮助和范围提示
     nl_answer: str = ""                    # NL2SQL 聊天式回答（新）
     # 澄清相关
     clarification_needed: bool = False
     clarified_question: str = ""
-    follow_up_questions: list = []
-    alternative_questions: list = []
-    empty_suggestions: list = []          # 空结果时的相似产品建议
+    follow_up_questions: list = Field(default_factory=list)
+    alternative_questions: list = Field(default_factory=list)
+    empty_suggestions: list = Field(default_factory=list)          # 空结果时的相似产品建议
     # 查询结果
     sql: str = ""
     sql_explanation: str = ""
-    data: list = []
-    columns: list = []
+    data: list = Field(default_factory=list)
+    columns: list = Field(default_factory=list)
     row_count: int = 0
-    chart: dict = {}
+    chart: dict = Field(default_factory=dict)
     execution_time_ms: float = 0
-    warnings: list = []
+    warnings: list = Field(default_factory=list)
     error: str | None = None
-    schema_tables: list = []
+    schema_tables: list = Field(default_factory=list)
+    schema_columns: list = Field(default_factory=list)
+    schema_relationships: list = Field(default_factory=list)
+    metric_definitions: list = Field(default_factory=list)
+    join_paths: list = Field(default_factory=list)
+    retrieval: dict = Field(default_factory=dict)
     retry_count: int = 0
     cache_hit: bool = False
     trace_id: str = ""
-
-
-async def _knowledge_answer(question: str, fallback: str) -> str:
-    """知识问答：企业知识库优先 → 未命中联网搜索 → 纯 LLM 兜底。"""
-    try:
-        from agent.knowledge_base import kb
-        kb_answer, _ = await asyncio.to_thread(kb.answer, question)
-        if kb_answer:
-            return kb_answer
-    except Exception:
-        pass
-    return await _knowledge_with_search(question, fallback)
-
-
-async def _knowledge_with_search(question: str, fallback: str) -> str:
-    """知识类问题：先联网搜索再 LLM 总结；任一环节失败降级 fallback（纯 LLM 回答）。"""
-    try:
-        from config import WEB_SEARCH_ENABLED
-        if not WEB_SEARCH_ENABLED:
-            return fallback
-        from agent.web_search import web_search, summarize_with_llm
-        results = await asyncio.to_thread(web_search, question, 5)
-        if not results:
-            return fallback
-        answer = await asyncio.to_thread(summarize_with_llm, question, results)
-        return answer or fallback
-    except Exception:
-        return fallback
 
 
 def _build_schema_hash() -> str:
@@ -108,8 +110,8 @@ async def query(request: QueryRequest):
     聊天式Agent接口 — LLM先判断意图，再决定聊天/查数据/快捷卡片
 
     流程：
-      1. AgentRouter判断意图（chat/sql_query/quick_card/knowledge/clarify）
-      2. chat/knowledge → LLM直接回复
+      1. AgentRouter判断意图（chat/sql_query/quick_card/clarify）
+      2. chat → 规则直接回复
       3. sql_query → 走LangGraph流水线
       4. quick_card → 预写SQL，毫秒级
     """
@@ -122,19 +124,14 @@ async def query(request: QueryRequest):
     from agent.agent_router import agent_router
     route = await asyncio.to_thread(agent_router.route, request.question)
 
-    # 纯聊天/知识问答 → LLM直接回复，不走SQL流水线
-    if route["mode"] in ("chat", "knowledge"):
-        reply = route.get("reply", "")
-        # 知识类问题：企业知识库优先 → 未命中再联网搜索 → 纯 LLM 兜底
-        if route["mode"] == "knowledge":
-            reply = await _knowledge_answer(request.question, reply)
+    # 问候和能力说明走确定性回复，不进入 SQL 流水线。
+    if route["mode"] == "chat":
         return QueryResponse(
-            question=request.question, chat_reply=reply,
+            question=request.question, chat_reply=route.get("reply", ""),
             sql="", sql_explanation="", data=[], columns=[], row_count=0,
             chart={}, execution_time_ms=0, warnings=[],
             error=None, schema_tables=[], retry_count=0, trace_id=trace_id,
         )
-
     # 快捷卡片 → 预写SQL，毫秒级
     if route["mode"] == "quick_card":
         from services.quick_queries import run_quick_query
@@ -148,18 +145,6 @@ async def query(request: QueryRequest):
             chart=result.get("chart",{}), execution_time_ms=result.get("execution_time_ms",0),
             warnings=result.get("warnings",[]), error=result.get("error"),
             schema_tables=[], retry_count=0, trace_id=trace_id,
-        )
-
-    # 竞品分析 → 调竞品分析器
-    if route["mode"] == "competitor":
-        from agent.competitor_analysis import analyze_competitor
-        competitor_name = route.get("rewritten") or request.question
-        result = analyze_competitor(competitor_name)
-        return QueryResponse(
-            question=request.question, chat_reply=result.get("analysis", "竞品分析失败"),
-            sql="", sql_explanation="", data=[], columns=[], row_count=0,
-            chart={}, execution_time_ms=0, warnings=[],
-            error=None, schema_tables=[], retry_count=0, trace_id=trace_id,
         )
 
     # 需要澄清 → 返回LLM生成的反问
@@ -180,17 +165,23 @@ async def query(request: QueryRequest):
     # 用LLM改写后的问题，而非原始问题
     effective_question = route.get("rewritten") or request.question
 
-    # 第一步：缓存查询
-    if not request.force_refresh:
+    # 第一步：只缓存无会话、无澄清的独立查询。
+    cache_allowed = not (
+        request.force_refresh
+        or request.session_id
+        or request.is_clarification
+        or request.clarification_history
+    )
+    cache_scope = _build_cache_scope()
+    if cache_allowed:
         try:
-            from cache.query_cache import get_cached_result
             schema_hash = _build_schema_hash()
-            cached = get_cached_result(request.question, schema_hash)
+            cached = get_cached_result(effective_question, schema_hash, scope=cache_scope)
             if cached:
                 cached["cache_hit"] = True
                 cached["trace_id"] = trace_id
                 return QueryResponse(**cached)
-        except (ImportError, Exception):
+        except Exception:
             pass
 
     # 第二步：对话记忆（维护多轮对话上下文）
@@ -275,20 +266,25 @@ async def query(request: QueryRequest):
             "warnings": final.get("result", {}).get("warnings", []),
             "error": final.get("error"),
             "schema_tables": final.get("schema_retrieved", {}).get("tables", []),
+            "schema_columns": final.get("schema_retrieved", {}).get("columns", []),
+            "schema_relationships": final.get("schema_retrieved", {}).get("relationships", []),
+            "metric_definitions": final.get("schema_retrieved", {}).get("metrics", []),
+            "join_paths": final.get("schema_retrieved", {}).get("join_paths", []),
+            "retrieval": final.get("schema_retrieved", {}).get("retrieval", {}),
             "retry_count": final.get("retry_count", 0),
             "cache_hit": False,
             "trace_id": trace.trace_id,
         }
 
-        # 第四步：写入Redis缓存
-        if not final.get("error") and not request.force_refresh:
-            try:
-                set_cached_result(request.question, _build_schema_hash(), response_data)
-            except (ImportError, Exception):
-                pass
-
-        # 数据脱敏：手机号/身份证/邮箱/银行卡自动打码
+        # 数据脱敏必须先于缓存，避免缓存未脱敏结果。
         response_data = mask_result(response_data)
+
+        # 第四步：写入查询缓存。
+        if not final.get("error") and cache_allowed:
+            try:
+                set_cached_result(effective_question, _build_schema_hash(), response_data, scope=cache_scope)
+            except Exception:
+                pass
 
         # 打印链路追踪到控制台
         trace_log.print()
@@ -309,7 +305,6 @@ async def query_stream(request: QueryRequest):
       event: done     data: {}
     """
     import json as _json
-    from fastapi.responses import StreamingResponse
     from agent.agent_router import agent_router
 
     trace_id = uuid.uuid4().hex[:12]
@@ -339,31 +334,14 @@ async def query_stream(request: QueryRequest):
         route = await asyncio.to_thread(agent_router.route, request.question)
         mode = route.get("mode")
 
-        # 聊天 / 知识 → 直接流式输出回复（打字效果）
-        if mode in ("chat", "knowledge"):
+        # 问候和能力说明直接流式返回。
+        if mode == "chat":
             reply = route.get("reply", "") or ""
-            for i in range(0, len(reply), 5):
-                yield sse("answer", {"delta": reply[i:i + 5]})
+            for index in range(0, len(reply), 5):
+                yield sse("answer", {"delta": reply[index:index + 5]})
                 await asyncio.sleep(0.02)
             yield sse("done", {})
             return
-
-        # 竞品分析 → LLM报告逐token流式输出
-        if mode == "competitor":
-            from agent.competitor_analysis import analyze_competitor
-            yield sse("status", {"message": "正在分析竞品..."})
-            name = route.get("rewritten") or request.question
-            result = await asyncio.to_thread(analyze_competitor, name, stream_cb)
-            yield sse("result", {
-                "question": request.question,
-                "chat_reply": result.get("analysis", "竞品分析失败"),
-                "sql": "", "data": [], "columns": [], "row_count": 0,
-                "chart": {}, "execution_time_ms": 0, "warnings": [],
-                "error": None, "schema_tables": [], "retry_count": 0, "trace_id": trace_id,
-            })
-            yield sse("done", {})
-            return
-
         # 需要澄清 → 一次性返回反问
         if mode == "clarify":
             yield sse("result", {
@@ -466,6 +444,11 @@ async def query_stream(request: QueryRequest):
             "warnings": final.get("result", {}).get("warnings", []),
             "error": final.get("error"),
             "schema_tables": final.get("schema_retrieved", {}).get("tables", []),
+            "schema_columns": final.get("schema_retrieved", {}).get("columns", []),
+            "schema_relationships": final.get("schema_retrieved", {}).get("relationships", []),
+            "metric_definitions": final.get("schema_retrieved", {}).get("metrics", []),
+            "join_paths": final.get("schema_retrieved", {}).get("join_paths", []),
+            "retrieval": final.get("schema_retrieved", {}).get("retrieval", {}),
             "retry_count": final.get("retry_count", 0),
             "cache_hit": False,
             "trace_id": trace_id,
@@ -476,121 +459,6 @@ async def query_stream(request: QueryRequest):
         yield sse("done", {})
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
-
-
-@router.websocket("/ws/query")
-async def websocket_query(websocket: WebSocket):
-    """
-    WebSocket流式查询接口 — 逐步推送每个节点的执行状态
-
-    前端可以实时看到：
-      · 正在分析问题，检索相关数据表...
-      · 正在生成SQL查询...
-      · 正在校验SQL安全性...
-      · SQL校验通过，正在执行查询...
-    """
-    await websocket.accept()
-
-    try:
-        while True:
-            data = await websocket.receive_text()
-            request = json.loads(data)
-            question = request.get("question", "")
-            session_id = request.get("session_id", "")
-            force_refresh = request.get("force_refresh", False)
-
-            if not question:
-                await websocket.send_json({"type": "error", "message": "问题不能为空"})
-                continue
-
-            # Redis缓存查询
-            if not force_refresh:
-                try:
-                    schema_hash = _build_schema_hash()
-                    cached = get_cached_result(question, schema_hash)
-                    if cached:
-                        cached["type"] = "result"
-                        cached["cache_hit"] = True
-                        await websocket.send_json({"type": "result", "data": cached, "cache_hit": True})
-                        await websocket.send_json({"type": "done"})
-                        continue
-                except (ImportError, Exception):
-                    pass
-
-            # 对话记忆
-            if session_id:
-                set_current_session(session_id)
-                mem = get_session(session_id)
-
-            # 第一个状态推送
-            await websocket.send_json({
-                "type": "status", "stage": "retrieve_schema",
-                "message": "正在分析问题，检索相关数据表..."
-            })
-
-            initial_state: WorkflowState = {
-                "question": question,
-                "schema_context": {},
-                "sql": "",
-                "validation_result": {},
-                "retry_count": 0,
-                "query_result": {},
-                "chart_recommendation": {},
-                "sql_explanation": "",
-                "final_response": {},
-                "error": None,
-            }
-
-            # 用astream_events实现流式推送
-            final = {}
-            async for event in app_workflow.astream_events(initial_state, version="v2"):
-                kind = event.get("event", "")
-                node_name = event.get("metadata", {}).get("langgraph_node", "")
-
-                # 每个节点开始时推送状态
-                if kind == "on_chain_start" and node_name:
-                    stage_messages = {
-                        "generate_sql": "正在生成SQL查询...",
-                        "validate_sql": "正在校验SQL安全性...",
-                        "fix_sql": "SQL有误，正在自动修正...",
-                        "execute_sql": "SQL校验通过，正在执行查询...",
-                        "build_response": "正在生成结果和可视化建议...",
-                    }
-                    if node_name in stage_messages:
-                        await websocket.send_json({
-                            "type": "status", "stage": node_name,
-                            "message": stage_messages[node_name],
-                        })
-
-                # 最后一个节点完成时推送最终结果
-                if kind == "on_chain_end" and node_name == "build_response":
-                    output = event.get("data", {}).get("output", {})
-                    final = output.get("final_response", {})
-
-                    await websocket.send_json({
-                        "type": "result",
-                        "data": {
-                            "question": final.get("question", ""),
-                            "sql": final.get("sql", ""),
-                            "sql_explanation": final.get("sql_explanation", ""),
-                            "nl_answer": final.get("nl_answer", ""),
-                            "data": final.get("result", {}).get("data", []),
-                            "columns": final.get("result", {}).get("columns", []),
-                            "row_count": final.get("result", {}).get("row_count", 0),
-                            "chart": final.get("chart", {}),
-                            "execution_time_ms": final.get("result", {}).get("execution_time_ms", 0),
-                            "warnings": final.get("result", {}).get("warnings", []),
-                            "error": final.get("error"),
-                            "retry_count": final.get("retry_count", 0),
-                        },
-                    })
-
-            await websocket.send_json({"type": "done"})
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        await websocket.send_json({"type": "error", "message": str(e)})
 
 
 @router.get("/health")
@@ -682,83 +550,6 @@ async def feedback_stats():
 
 # ================================================================
 
-@router.post("/reports/daily")
-async def generate_daily_report(date: str = None):
-    """手动触发生成日报"""
-    report = scheduler.generate_daily_report(date)
-    return report
-
-@router.post("/reports/monthly")
-async def generate_monthly_report(year: int = None, month: int = None):
-    """手动触发生成月报"""
-    report = scheduler.generate_monthly_report(year, month)
-    return report
-
-@router.get("/reports")
-async def list_reports():
-    """列出所有已生成的报告"""
-    return {"reports": scheduler.list_reports()}
-
-@router.get("/reports/{report_key}")
-async def get_report(report_key: str):
-    """获取指定报告"""
-    report = scheduler.get_report(report_key)
-    if not report:
-        return JSONResponse(status_code=404, content={"error": "报告不存在"})
-    return report
-
-# ================================================================
-# 系统状态接口（限流+熔断状态）
-# ================================================================
-
-@router.get("/health/full")
-async def health_full():
-    """完整健康检查（含限流和熔断状态）"""
-    from middleware.auth_middleware import rate_limiter, circuit_breaker
-    return {
-        "status": "ok",
-        "service": "data-analysis-agent",
-        "rate_limiter": {"active": True},
-        "circuit_breaker": circuit_breaker.get_status(),
-    }
-
-
-# ================================================================
-# 智能分析接口 — 一键分析昨日+上月销售+差评+改进建议
-# ================================================================
-
-@router.post("/analysis/quick")
-async def quick_analysis():
-    """
-    一键智能分析:
-      1. 昨日销售概况
-      2. 上月销售概况
-      3. 差评产品根因分析
-      4. LLM生成改进建议
-    """
-    from services.auto_analysis import auto_analyzer
-    result = auto_analyzer.analyze()
-    return result
-
-@router.get("/analysis/yesterday")
-async def yesterday_summary():
-    """仅获取昨日销售概况"""
-    from datetime import datetime, timedelta
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    report = scheduler.generate_daily_report(yesterday)
-    return report
-
-@router.get("/analysis/monthly")
-async def monthly_summary(year: int = None, month: int = None):
-    """仅获取月报（含产品评论分析）"""
-    report = scheduler.generate_monthly_report(year, month)
-    return report
-
-
-# ================================================================
-# 快捷查询接口 — 常规问题不走LLM，直接执行预写SQL
-# ================================================================
-
 @router.get("/quick/list")
 async def list_quick_queries():
     """返回所有快捷查询列表（前端渲染卡片用）"""
@@ -770,7 +561,8 @@ _QUICK_COL_ZH = {
     "sales_amount": "销售额", "quantity": "销量", "total_qty": "销量",
     "total_amount": "金额", "stock_quantity": "库存", "product_name": "产品",
     "category": "品类", "month": "月份", "supplier": "供应商",
-    "refund_count": "退款数", "refund_rate": "退款率", "rating": "评分",
+    "refund_count": "退款数", "refund_rate": "退款率",
+    "refund_order_rate_pct": "退款订单率", "rating": "评分",
     "avg_rating": "平均评分", "customer_name": "客户", "region": "地区",
     "member_level": "会员等级", "payment_method": "支付方式",
     "count": "数量", "sum": "合计", "revenue": "营收", "growth": "增长",
@@ -809,7 +601,7 @@ async def run_quick_card(query_key: str):
 # 数据导出接口
 # ================================================================
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 @router.post("/data/upload")
 async def data_upload(file: UploadFile = File(...)):
@@ -821,36 +613,9 @@ async def data_upload(file: UploadFile = File(...)):
     return result
 
 
-@router.post("/kb/upload")
-async def kb_upload(file: UploadFile = File(...)):
-    """上传企业文档（txt/md/pdf/csv）入库知识库，供知识问答检索。"""
-    content = await file.read()
-    from agent.knowledge_base import kb
-    try:
-        result = kb.add_document(file.filename or "doc.txt", content)
-        return result
-    except Exception as e:
-        return {"error": f"入库失败: {e}", "doc": file.filename or ""}
-
-
-@router.get("/kb/list")
-async def kb_list():
-    """知识库文档列表"""
-    from agent.knowledge_base import kb
-    return {"documents": kb.list_documents()}
-
-
-@router.delete("/kb/{doc_name}")
-async def kb_delete(doc_name: str):
-    """删除知识库文档"""
-    from agent.knowledge_base import kb
-    kb.delete_document(doc_name)
-    return {"ok": True, "doc": doc_name}
-
-
 class ExportRequest(BaseModel):
-    data: list = []
-    columns: list = []
+    data: list = Field(default_factory=list)
+    columns: list = Field(default_factory=list)
     title: str = "查询结果"
 
 @router.post("/export/excel")
@@ -869,27 +634,6 @@ async def export_excel(request: ExportRequest):
 
 # ================================================================
 # 商业智能接口
-# ================================================================
-
-@router.get("/bi/anomalies")
-async def get_anomalies():
-    """异常检测：销售额骤降/退款率过高/库存告急"""
-    from services.business_intelligence import bi
-    return bi.detect_anomalies()
-
-@router.get("/bi/trends")
-async def get_trends():
-    """趋势预警：检测销量连续下滑的产品"""
-    return bi.detect_trends()
-
-@router.post("/bi/daily_report")
-async def get_daily_report():
-    """生成运营日报（LLM总结+异常+趋势）"""
-    return bi.generate_daily_report()
-
-
-# ================================================================
-# 数据库管理接口
 # ================================================================
 
 class DBConnectionRequest(BaseModel):
@@ -956,146 +700,7 @@ async def clear_history(session_id: str = "default"):
 
 
 # ================================================================
-# 竞品分析接口
-# ================================================================
-
-class CompetitorAnalyzeRequest(BaseModel):
-    company_name: str = ""
-    competitor_url: str = ""
-    include_internal: bool = True
-    category: str = ""
-    session_id: str = ""
-
-
-@router.post("/competitor/analyze")
-async def competitor_analyze(request: CompetitorAnalyzeRequest):
-    """
-    竞品分析 — 完整5阶段流水线:
-      Stage 1: 抓取竞品官网（Scrapling引擎）
-      Stage 2: 7维度解析（产品/定价/口碑/市场/技术/内容/客户）
-      Stage 3: 自动打分 + SWOT + 排名
-      Stage 4: 内部SQL数据对比
-      Stage 5: LLM战略报告生成
-
-    返回: {found, name, analysis, data_sources, internal_summary, error, trace_id}
-    """
-    trace_id = uuid.uuid4().hex[:12]
-
-    if not request.company_name:
-        return {
-            "error": "请提供竞品公司名称",
-            "company_name": "",
-            "trace_id": trace_id,
-        }
-
-    # 缓存检查（5分钟 TTL）
-    if not getattr(request, 'force_refresh', False):
-        try:
-            cache_key = f"competitor:{request.company_name}:{request.include_internal}"
-            cached = get_cached_result(cache_key, "competitor_v1")
-            if cached:
-                cached["cache_hit"] = True
-                cached["trace_id"] = trace_id
-                return cached
-        except Exception:
-            pass
-
-    # 真实流水线（agent/competitor_analysis/analyzer.py）：
-    # 匹配已知竞品 → 加载本地竞品JSON → 内部SQL对比 → 差评 → LLM洞察
-    t0 = time.time()
-    result = await asyncio.to_thread(analyze_competitor, request.company_name, None)
-
-    response = {
-        "company_name": request.company_name,
-        "found": result.get("found", False),
-        "name": result.get("name", request.company_name),
-        "analysis": result.get("analysis", ""),
-        "data_sources": result.get("data_sources", []),
-        "internal_summary": result.get("internal_summary", {}),
-        "execution_time_ms": int((time.time() - t0) * 1000),
-        "cache_hit": False,
-        "error": result.get("error"),
-        "trace_id": trace_id,
-    }
-
-    # 写入缓存（仅找到竞品数据时）
-    if result.get("found"):
-        try:
-            cache_key = f"competitor:{request.company_name}:{request.include_internal}"
-            set_cached_result(cache_key, "competitor_v1", response)
-        except Exception:
-            pass
-
-    return response
-
-
-@router.websocket("/competitor/analyze/ws")
-async def competitor_analyze_ws(websocket: WebSocket):
-    """
-    竞品分析 WebSocket 流式接口 — 状态推送 + LLM 报告逐token流式输出
-    """
-    await websocket.accept()
-
-    try:
-        data = await websocket.receive_text()
-        request = json.loads(data)
-        company_name = request.get("company_name", "")
-
-        if not company_name:
-            await websocket.send_json({"type": "error", "message": "请提供竞品公司名称"})
-            return
-
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def stream_cb(delta: str):
-            # 工作线程（to_thread）→ 事件循环 → 队列，与 /api/query/stream 同模式
-            loop.call_soon_threadsafe(lambda: queue.put_nowait(("delta", delta)))
-
-        await websocket.send_json({
-            "type": "status",
-            "message": "正在加载竞品数据并对比内部销售...",
-        })
-
-        task = asyncio.create_task(
-            asyncio.to_thread(analyze_competitor, company_name, stream_cb)
-        )
-        while True:
-            while not queue.empty():
-                _, delta = queue.get_nowait()
-                await websocket.send_json({"type": "delta", "delta": delta})
-            if task.done():
-                break
-            await asyncio.sleep(0.03)
-        while not queue.empty():
-            _, delta = queue.get_nowait()
-            await websocket.send_json({"type": "delta", "delta": delta})
-
-        result = task.result()
-        await websocket.send_json({
-            "type": "result",
-            "data": {
-                "company_name": company_name,
-                "name": result.get("name", company_name),
-                "found": result.get("found", False),
-                "analysis": result.get("analysis", ""),
-                "internal_summary": result.get("internal_summary", {}),
-                "error": result.get("error"),
-            },
-        })
-        await websocket.send_json({"type": "done"})
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
-
-
-# ================================================================
-# 检索质量监控
+# 检索质量指标接口
 # ================================================================
 
 @router.get("/metrics/retrieval")
@@ -1105,132 +710,3 @@ async def retrieval_metrics(limit: int = 100):
     """
     from services.retrieval_metrics import get_metrics
     return get_metrics(limit)
-
-
-# ================================================================
-# 竞品分析接口
-# ================================================================
-
-@router.get("/competitor/list")
-async def list_competitors():
-    """列出所有可分析的竞品"""
-    # analyzer is the singleton instance
-    return {"competitors": analyzer.list_competitors()}
-
-
-
-
-# ================================================================
-# 市场情报
-# ================================================================
-
-class MarketSelectionRequest(BaseModel):
-    category: str
-
-
-class MarketProductRequest(BaseModel):
-    query: str
-
-
-class MarketPasteRequest(BaseModel):
-    text: str
-    mode: str = "product"   # product | selection | competitor
-
-
-@router.post("/market/selection")
-def market_selection(request: MarketSelectionRequest):
-    # 普通 def：FastAPI 自动丢线程池，避免网络爬取+LLM 的阻塞调用卡住事件循环
-    from agent.market_intelligence.selection import analyze_selection
-    result = analyze_selection(request.category)
-    return result
-
-
-@router.post("/market/product")
-def market_product(request: MarketProductRequest):
-    # 普通 def：FastAPI 自动丢线程池，避免网络爬取+LLM 的阻塞调用卡住事件循环
-    from agent.market_intelligence.product_analyzer import analyze_product
-    result = analyze_product(request.query)
-    return result
-
-
-@router.post("/market/paste")
-def market_paste(request: MarketPasteRequest):
-    """粘贴数据分析 — 用户提供真实文本，LLM 直接分析（不触发爬虫）。
-    反爬导致自动抓取失败时的可靠替代：把看到的商品/市场/竞品信息贴进来。
-    mode: product(商品研究) / selection(选品) / competitor(竞品洞察)
-    """
-    from agent.market_intelligence.paste_analysis import analyze_pasted
-    result = analyze_pasted(request.mode, request.text)
-    return result
-
-
-@router.post("/market/stream")
-async def market_stream(request: MarketProductRequest):
-    """SSE 流式市场情报分析。按 query 自动判断 selection / product。"""
-    import json as _json
-    from fastapi.responses import StreamingResponse
-    from agent.agent_router import agent_router
-
-    async def event_gen():
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def sse(event, data):
-            return f"event: {event}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
-
-        def stream_cb(text):
-            loop.call_soon_threadsafe(lambda: queue.put_nowait(text))
-
-        async def forward():
-            while not queue.empty():
-                yield sse("status", {"message": queue.get_nowait()})
-
-        route = await asyncio.to_thread(agent_router.route, request.query)
-        mode = route.get("mode")
-        sub = route.get("sub", "selection")
-        query = route.get("query", request.query)
-
-        if mode != "market_intelligence":
-            # 尽力而为兜底：前端既然投到 market 端点，意图是市场分析 →
-            # 直接跑选品，不再"未识别"后死端无结果。保留下方 error 事件处理。
-            sub = "selection"
-            query = request.query
-            yield sse("status", {"message": "按选品分析处理..."})
-
-        task = asyncio.create_task(_run_market(sub, query, stream_cb))
-        try:
-            while True:
-                async for ev in forward():
-                    yield ev
-                if task.done():
-                    break
-                await asyncio.sleep(0.03)
-
-            async for ev in forward():
-                yield ev
-
-            try:
-                result = task.result()
-            except Exception as e:
-                yield sse("error", {"message": str(e)})
-                yield sse("done", {})
-                return
-
-            yield sse("result", result)
-            yield sse("done", {})
-        finally:
-            # 客户端断开 → generator 被 abort，取消后台分析任务，避免白跑浪费 LLM/爬取
-            if not task.done():
-                task.cancel()
-
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
-
-
-async def _run_market(sub: str, query: str, stream_cb):
-    """后台任务：跑选品或商品研究（阻塞调用丢线程池）"""
-    import asyncio
-    if sub == "selection":
-        from agent.market_intelligence.selection import analyze_selection
-        return await asyncio.to_thread(analyze_selection, query, None, stream_cb)
-    from agent.market_intelligence.product_analyzer import analyze_product
-    return await asyncio.to_thread(analyze_product, query, None, stream_cb)

@@ -114,8 +114,8 @@ def _to_insert_value(v, col_type: str):
     return str(v)
 
 
-def ingest_file(filename: str, content: bytes) -> dict:
-    """解析并入库文件。返回 {table, columns, row_count, error}。"""
+def parse_file(filename: str, content: bytes) -> dict:
+    """解析并校验表格文件，不写入数据库。"""
     if len(content) > MAX_FILE_BYTES:
         return {"error": f"文件超过 {MAX_FILE_BYTES // 1024 // 1024}MB 限制"}
     ext = "." + (filename.rsplit(".", 1)[-1].lower() if "." in filename else "")
@@ -127,15 +127,47 @@ def ingest_file(filename: str, content: bytes) -> dict:
             headers, rows = _parse_csv(content)
         else:
             headers, rows = _parse_xlsx(content)
-        if not headers:
-            return {"error": "文件为空或没有表头"}
-        if len(headers) > 50:
-            return {"error": f"列数过多（{len(headers)} 列，上限 50）"}
-        if len(rows) > 200_000:
-            return {"error": "行数超过 20 万，请分批导入"}
-    except Exception as e:
-        logger.warning(f"[DataIngest] 解析失败: {e}")
-        return {"error": f"文件解析失败: {e}"}
+    except Exception as error:
+        logger.warning(f"[DataIngest] 解析失败: {error}")
+        return {"error": f"文件解析失败: {error}"}
+
+    if not headers:
+        return {"error": "文件为空或没有表头"}
+    if len(headers) > 50:
+        return {"error": f"列数过多（{len(headers)} 列，上限 50）"}
+    if len(rows) > 200_000:
+        return {"error": "行数超过 20 万，请分批导入"}
+    return {"error": None, "extension": ext, "headers": headers, "rows": rows}
+
+
+def inspect_file(filename: str, content: bytes, entity_type: str) -> dict:
+    """上传前预检：解析文件、建议字段映射并执行质量检查。"""
+    parsed = parse_file(filename, content)
+    if parsed.get("error"):
+        return parsed
+    from services.data_quality import check_data_quality
+
+    headers = parsed["headers"]
+    dict_rows = [
+        {headers[index]: row[index] if index < len(row) else None for index in range(len(headers))}
+        for row in parsed["rows"]
+    ]
+    quality = check_data_quality(entity_type, dict_rows)
+    return {
+        "error": None,
+        "filename": filename,
+        "extension": parsed["extension"],
+        "quality": quality,
+    }
+
+
+def ingest_file(filename: str, content: bytes) -> dict:
+    """解析并入库文件。返回 {table, columns, row_count, error}。"""
+    parsed = parse_file(filename, content)
+    if parsed.get("error"):
+        return parsed
+    headers = parsed["headers"]
+    rows = parsed["rows"]
 
     table = safe_table_name(filename)
     col_types = [_infer_sql_type([r[i] for r in rows[:100] if i < len(r)])

@@ -76,6 +76,10 @@ def _ensure_table(db_path: str = "demo_sales.db"):
     _table_created = True
 
 
+def initialize_retrieval_metrics(db_path: str = "demo_sales.db"):
+    _ensure_table(db_path)
+
+
 # ── 采集器 ──
 
 class RetrievalSpan:
@@ -237,6 +241,7 @@ def get_current_span() -> Optional[RetrievalSpan]:
 def get_metrics(limit: int = 100) -> dict:
     """计算累积检索质量指标"""
     db_path = _DB_PATH or "demo_sales.db"
+    _ensure_table(db_path)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 

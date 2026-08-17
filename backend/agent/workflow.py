@@ -97,6 +97,20 @@ def retrieve_schema_node(state: WorkflowState) -> WorkflowState:
             question = f"{anchor} {question}"
     schema_context = schema_retriever.retrieve(question)
 
+    retrieval_meta = schema_context.get("retrieval", {})
+    if retrieval_meta.get("low_confidence"):
+        return {
+            **state,
+            "schema_context": schema_context,
+            "clarification_needed": True,
+            "follow_up_questions": [
+                "请补充要分析的业务对象或指标。",
+                "需要查看哪个时间范围或店铺范围？",
+            ],
+            "alternative_questions": ["本月销售额", "库存不足的商品", "最近7天退款趋势"],
+            "retry_count": 0,
+        }
+
     if not schema_context.get("tables"):
         tr = TraceLog.current()
         if tr: tr.record("retrieve_schema", "error", "未找到相关表", (time.time()-t0)*1000)
@@ -106,12 +120,21 @@ def retrieve_schema_node(state: WorkflowState) -> WorkflowState:
     tr = TraceLog.current()
     if tr: tr.record("retrieve_schema", "ok", f"{len(table_names)}张表({','.join(table_names)})", (time.time()-t0)*1000)
 
-    # 检索质量日志：记录 Keyword Hit + 检索到的表/列
+    # 检索质量日志：记录召回来源、表、字段和耗时。
     span = state.get("retrieval_span")
     if span:
         try:
-            span.set_latency(retrieve=(time.time()-t0)*1000)
-            span.set_keyword_hit(True)  # 走到这里说明关键词命中
+            strategy = retrieval_meta.get("strategy", "")
+            keyword_contributed = strategy in {"exact_keyword", "keyword_fallback"} or any(
+                "keyword" in item.get("sources", [])
+                for item in schema_context.get("evidence", [])
+            )
+            span.set_latency(retrieve=(time.time() - t0) * 1000)
+            span.set_keyword_hit(keyword_contributed)
+            span.set_retrieved(
+                schema_context.get("tables", []),
+                schema_context.get("columns", []),
+            )
         except Exception:
             pass
 
@@ -400,32 +423,31 @@ async def execute_sql_node(state: WorkflowState) -> WorkflowState:
         analysis_text = await asyncio.to_thread(
             _analyze_why, original_q, sql, query_result, state.get("schema_context", {})
         )
-        if tr: tr.record("auto_analysis", "ok", f"{len(analysis_text)}字符分析", 0)
+        if tr: tr.record("analysis_summary", "ok", f"{len(analysis_text)}字符分析", 0)
 
-    # NL聊天式回答：流式路径用LLM逐token生成，普通路径用规则版（0延迟）
+    # 默认使用确定性摘要（0 Token）；仅显式开启时调用 LLM 润色。
     nl_answer = ""
     answer_tokens = 0
     if query_result.get("data"):
+        from config import NL_ANSWER_LLM
+
         stream_cb = state.get("stream_answer_cb")
-        if stream_cb:
+        nl_answer = _generate_nl_answer(original_q, sql, query_result)
+        if NL_ANSWER_LLM and intent != "analysis":
             _emit_progress(state, "正在生成回答...")
-            nl_answer = await sql_generator.answer_stream(original_q, sql, query_result, stream_cb)
-            if not nl_answer:  # LLM不可用/失败 → 降级规则版
-                nl_answer = _generate_nl_answer(original_q, sql, query_result)
+            if stream_cb:
+                llm_answer = await sql_generator.answer_stream(
+                    original_q, sql, query_result, stream_cb
+                )
             else:
-                # LLM 流式回答的 Token 粗略估算（1 token ≈ 1.5 中文字符）
-                answer_tokens = len(nl_answer)
-        else:
-            # 普通路径：LLM增强口语化回答（可配置，失败自动降级规则版）
-            nl_answer = _generate_nl_answer(original_q, sql, query_result)
-            if query_result.get("data"):
-                from config import NL_ANSWER_LLM
-                if NL_ANSWER_LLM:
-                    _emit_progress(state, "正在生成回答...")
-                    llm_answer = await sql_generator.answer_summary(original_q, sql, query_result)
-                    if llm_answer:
-                        nl_answer = llm_answer
-                        answer_tokens = len(llm_answer)
+                llm_answer = await sql_generator.answer_summary(
+                    original_q, sql, query_result
+                )
+            if llm_answer:
+                nl_answer = llm_answer
+                answer_tokens = len(llm_answer)
+        elif stream_cb and nl_answer:
+            stream_cb(nl_answer)
     elif query_result.get("row_count", 0) == 0:
         # 空结果也要给用户一句"原因/建议"，而不是什么都不说
         nl_answer = _generate_nl_answer(original_q, sql, query_result)
@@ -469,7 +491,12 @@ def build_final_response(state: WorkflowState) -> WorkflowState:
         "chart": state.get("chart_recommendation", {}),
         "analysis_text": state.get("analysis_text", ""),
         "schema_retrieved": {
-            "tables": [t["table"] for t in state.get("schema_context", {}).get("tables", [])],
+            "tables": [item["table"] for item in state.get("schema_context", {}).get("tables", [])],
+            "columns": state.get("schema_context", {}).get("columns", []),
+            "relationships": state.get("schema_context", {}).get("relationships", []),
+            "metrics": state.get("schema_context", {}).get("metrics", []),
+            "join_paths": state.get("schema_context", {}).get("join_paths", []),
+            "retrieval": state.get("schema_context", {}).get("retrieval", {}),
         },
         "retry_count": state.get("retry_count", 0),
         "topic_id": state.get("topic_id", ""),
@@ -727,6 +754,12 @@ def should_clarify_or_sql(state: WorkflowState) -> str:
     return "generate_sql"          # 问题清晰 → 生成SQL
 
 
+def should_generate_after_retrieval(state: WorkflowState) -> str:
+    if state.get("error") or state.get("clarification_needed"):
+        return "build_response"
+    return "generate_sql"
+
+
 def should_retry_sql(state: WorkflowState) -> str:
     """决定SQL校验失败后的走向：修正SQL / 跳过执行 / 继续执行"""
     if state.get("error"):
@@ -766,7 +799,6 @@ def build_workflow() -> StateGraph:
     workflow.add_node("build_response", build_final_response)
 
     workflow.set_entry_point("clarify_question")
-    workflow.add_edge("clarify_question", "retrieve_schema")
 
     # 条件边：理解通过→检索Schema，需要反问→直接返回用户
     workflow.add_conditional_edges(
@@ -775,8 +807,12 @@ def build_workflow() -> StateGraph:
         {"generate_sql": "retrieve_schema", "build_response": "build_response"},
     )
 
-    # Schema检索 → SQL生成
-    workflow.add_edge("retrieve_schema", "generate_sql")
+    # Schema 低置信时先澄清，不冒险生成 SQL。
+    workflow.add_conditional_edges(
+        "retrieve_schema",
+        should_generate_after_retrieval,
+        {"generate_sql": "generate_sql", "build_response": "build_response"},
+    )
     workflow.add_edge("generate_sql", "validate_sql")
 
     # 条件边：校验不通过→修正SQL，通过→执行

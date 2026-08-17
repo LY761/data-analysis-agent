@@ -12,6 +12,7 @@ QUICK_QUERIES = {
         "label": "本月销售额",
         "icon": "💰",
         "description": "本月总销售额、订单数、客单价",
+        "metric_keys": ["gmv", "paid_order_count", "average_order_value"],
         "sql": """
             SELECT SUM(total_amount) AS total_sales,
                    COUNT(*) AS order_count,
@@ -26,6 +27,7 @@ QUICK_QUERIES = {
         "label": "上月销售额",
         "icon": "📊",
         "description": "上月销售总额、环比变化",
+        "metric_keys": ["gmv", "paid_order_count", "average_order_value"],
         "sql": """
             SELECT SUM(total_amount) AS total_sales,
                    COUNT(*) AS order_count,
@@ -40,6 +42,7 @@ QUICK_QUERIES = {
         "label": "本月热销Top5",
         "icon": "🏆",
         "description": "本月销售额最高的5个产品",
+        "metric_keys": ["gmv"],
         "sql": """
             SELECT p.product_name, p.category,
                    SUM(oi.quantity) AS total_qty,
@@ -58,6 +61,7 @@ QUICK_QUERIES = {
         "label": "本月滞销Top5",
         "icon": "📉",
         "description": "本月销售额最低的5个产品",
+        "metric_keys": ["gmv"],
         "sql": """
             SELECT p.product_name, p.category,
                    COALESCE(SUM(oi.quantity),0) AS total_qty,
@@ -89,6 +93,7 @@ QUICK_QUERIES = {
         "label": "各类别销售额",
         "icon": "🥧",
         "description": "本月各产品类别销售占比",
+        "metric_keys": ["gmv"],
         "sql": """
             SELECT p.category,
                    SUM(oi.quantity * oi.unit_price) AS total_sales,
@@ -107,6 +112,7 @@ QUICK_QUERIES = {
         "label": "各地区销售额",
         "icon": "🗺️",
         "description": "本月各地区销售额排名",
+        "metric_keys": ["gmv", "paid_order_count"],
         "sql": """
             SELECT c.region,
                    SUM(o.total_amount) AS total_sales,
@@ -124,6 +130,7 @@ QUICK_QUERIES = {
         "label": "会员消费分析",
         "icon": "👑",
         "description": "各会员等级消费金额和人数",
+        "metric_keys": ["gmv", "average_order_value"],
         "sql": """
             SELECT c.member_level,
                    COUNT(DISTINCT c.customer_id) AS customer_count,
@@ -142,6 +149,7 @@ QUICK_QUERIES = {
         "label": "支付方式统计",
         "icon": "💳",
         "description": "本月各支付方式订单量和金额",
+        "metric_keys": ["gmv", "paid_order_count"],
         "sql": """
             SELECT payment_method,
                    COUNT(*) AS order_count,
@@ -158,6 +166,7 @@ QUICK_QUERIES = {
         "label": "本月vs上月对比",
         "icon": "📈",
         "description": "本月和上月销售额/订单数对比",
+        "metric_keys": ["gmv", "paid_order_count", "gmv_growth_pct"],
         "sql": """
             SELECT '本月' AS period,
                    SUM(total_amount) AS total_sales,
@@ -178,12 +187,20 @@ QUICK_QUERIES = {
     "refund_analysis": {
         "label": "退款分析",
         "icon": "↩️",
-        "description": "退款订单数/金额/退款率",
+        "description": "本月退款订单数、金额和退款订单率",
+        "metric_keys": ["refund_order_rate_pct"],
         "sql": """
             SELECT
                 COUNT(*) AS refund_count,
                 SUM(total_amount) AS refund_amount,
-                ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM orders), 1) AS refund_rate
+                ROUND(
+                    COUNT(*) * 100.0 /
+                    NULLIF((
+                        SELECT COUNT(*) FROM orders
+                        WHERE strftime('%Y-%m', order_date) = strftime('%Y-%m', 'now')
+                    ), 0),
+                    1
+                ) AS refund_order_rate_pct
             FROM orders
             WHERE status IN ('已退款', '已取消')
               AND strftime('%Y-%m', order_date) = strftime('%Y-%m', 'now')
@@ -252,6 +269,7 @@ def get_quick_query_list() -> list:
             "label": config["label"],
             "icon": config["icon"],
             "description": config["description"],
+            "metric_keys": config.get("metric_keys", []),
         }
         for key, config in QUICK_QUERIES.items()
     ]
@@ -268,6 +286,11 @@ def run_quick_query(query_key: str) -> dict:
 
     config = QUICK_QUERIES[query_key]
     result = executor.execute(config["sql"])
+    from domain.metric_registry import metric_registry
+    metric_definitions = {
+        metric_key: metric_registry.get(metric_key).to_public_dict()
+        for metric_key in config.get("metric_keys", [])
+    }
 
     # 根据图表类型构建ECharts配置
     chart = _build_chart(query_key, config["chart_type"], result)
@@ -283,6 +306,7 @@ def run_quick_query(query_key: str) -> dict:
         "warnings": result.get("warnings") or [],
         "error": result.get("error"),
         "quick_query": True,  # 标记来自快捷查询
+        "metric_definitions": metric_definitions,
     }
 
 

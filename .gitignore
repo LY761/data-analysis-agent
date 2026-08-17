@@ -15,6 +15,7 @@ demo_sales.db
 # 密钥（绝不提交）
 .env
 .env.local
+backend/olist_import_result.json
 *.key
 
 # SDD 工作区（git-ignored scratch）
@@ -31,3 +32,4 @@ jd_session/
 
 # 评测报告（eval_agent.py 生成物，可随时重跑）
 eval_report.json
+backend/eval/results/*.json

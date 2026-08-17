@@ -62,44 +62,37 @@ def mask_value(column_name: str, value) -> str:
 
 
 def mask_result(result: dict) -> dict:
-    """
-    对查询结果的敏感字段进行脱敏。
-    不改动原dict，返回脱敏后的副本。
-    """
-    if not result.get("success") or not result.get("data"):
+    """返回脱敏副本；兼容执行器结果和 API 响应，不依赖 success 字段。"""
+    if not isinstance(result, dict):
         return result
 
-    data = result.get("data", [])
-    columns = result.get("columns", [])
+    data = result.get("data")
+    if not isinstance(data, list) or not data:
+        return dict(result)
 
-    # 找出需要脱敏的列
-    sensitive_cols = set()
-    for col in columns:
-        for pattern in MASK_RULES:
-            if re.match(pattern, col, re.IGNORECASE):
-                sensitive_cols.add(col)
-                break
+    columns = result.get("columns") or (
+        list(data[0].keys()) if isinstance(data[0], dict) else []
+    )
+    sensitive_columns = {
+        column
+        for column in columns
+        if any(re.match(pattern, str(column), re.IGNORECASE) for pattern in MASK_RULES)
+    }
+    if not sensitive_columns:
+        return dict(result)
 
-    if not sensitive_cols:
-        return result  # 没有敏感列，直接返回
-
-    logger.info(f"[Masking] Detected sensitive columns: {sensitive_cols}")
-
-    # 脱敏
-    masked_data = []
-    for row in data:
-        masked_row = {}
-        for key, value in row.items():
-            if key in sensitive_cols:
-                masked_row[key] = mask_value(key, value)
-            else:
-                masked_row[key] = value
-        masked_data.append(masked_row)
-
-    result["data"] = masked_data
-    result["_masked"] = True  # 标记已脱敏
-    return result
-
+    masked_result = dict(result)
+    masked_result["data"] = [
+        {
+            key: mask_value(key, value) if key in sensitive_columns else value
+            for key, value in row.items()
+        }
+        if isinstance(row, dict) else row
+        for row in data
+    ]
+    masked_result["_masked"] = True
+    logger.info("[Masking] masked columns: %s", sorted(sensitive_columns))
+    return masked_result
 
 def get_masking_report(result: dict) -> dict:
     """返回脱敏报告（哪些列被脱敏了，用于审计）"""

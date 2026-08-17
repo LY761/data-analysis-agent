@@ -1,205 +1,158 @@
-"""
-Agent路由器 — 聊天式智能调度
+"""智能问数 Agent 路由器。
 
-用户输入 → LLM判断: 聊天? 查数据? 知识问答?
-         → 聊天: 直接LLM回复
-         → 查数据: 走SQL流水线
-         → 快捷卡片: 匹配预写SQL
-         → 知识问答: LLM知识库回复
+只负责确定当前请求应走规则回复、预写查询、NL2SQL 或澄清流程。
+知识库、联网搜索、爬虫、竞品和选品能力不属于本项目主链路。
 """
+
 import json
 import logging
+import re
+
+import httpx
 from openai import OpenAI
+
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 logger = logging.getLogger(__name__)
 
-ROUTER_PROMPT = """你是一个数据分析Agent的路由器。分析用户消息，判断应该怎么处理。
+_ALLOWED_MODES = {"chat", "sql_query", "quick_card", "clarify"}
 
-## 处理方式
+ROUTER_PROMPT = """你是电商数据分析 Agent 的意图路由器，只处理以下四类请求：
 
-1. **chat** — 纯聊天/问候/闲聊，不需要查数据库
-   例: "你好" "今天天气不错" "谢谢" "你是谁" "能做什么"
+1. chat：问候、帮助、能力说明，或电商指标概念解释。
+2. sql_query：必须查询企业数据库才能回答的问题。
+3. clarify：缺少指标、对象或时间范围，无法安全查询。
+4. quick_card：仅当问题能明确映射到给定快捷查询键时使用。
 
-2. **sql_query** — 需要查数据库才能回答
-   例: "上个月销售额" "库存不足的产品" "哪个客户消费最多"
+项目不负责天气、新闻、百科、法律、知识库、爬虫、选品或竞品调研。遇到越界请求，使用 chat 并简短说明能力边界。
 
-3. **quick_card** — 可以用快捷卡片回答（已有预写SQL）
-   例: "本月销售额" "库存预警" "最近7天趋势" "退款情况"
-   可用卡片: monthly_sales, last_month_sales, top5_products, worst5_products,
-            stock_alert, category_sales, region_sales, member_analysis,
-            payment_methods, month_vs_last, refund_analysis, supplier_analysis,
-            last_7days_trend, product_review_score
-
-4. **knowledge** — 问的是通用知识/概念，不涉及当前数据库
-   例: "什么是RFM分析" "怎么做用户分群" "电商常用指标有哪些"
-
-5. **clarify** — 问题不够清楚，需要反问
-   例: "帮我分析一下"（没说要分析什么）
-
-6. **competitor** — 分析竞品/对比竞品
-   例: "分析一下安克创新" "绿联跟我们比怎么样" "竞品分析" "对比一下绿联和我们"
-
-## 输出JSON
+输出严格 JSON：
 {
-  "mode": "chat|sql_query|quick_card|knowledge|clarify|competitor_analysis",
-  "reply": "如果是chat/knowledge/clarify模式，直接回复用户的内容",
-  "rewritten": "如果是sql_query模式，改写后的清晰问题",
-  "card_key": "如果是quick_card模式，对应的卡片key",
-  "competitor_name": "如果是competitor_analysis模式，提取的竞品公司名",
-  "competitor_url": "如果是competitor_analysis且有URL，提取的URL",
-  "include_internal": true/false,
-  "reason": "判断依据(一句话)"
-}"""
+  "mode": "chat|sql_query|quick_card|clarify",
+  "reply": "chat 或 clarify 的简短回复",
+  "rewritten": "sql_query 的清晰查询问题",
+  "card_key": "quick_card 的快捷查询键",
+  "follow_up_questions": ["最多两个澄清问题"],
+  "reason": "一句话判断依据"
+}
+"""
 
 
 class AgentRouter:
-    """智能路由器：判断用户意图，分发到不同处理路径"""
+    """用确定性规则覆盖高频请求，仅在必要时调用小模型路由。"""
 
-    def __init__(self):
-        import httpx
-        self.client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL,
-                            timeout=httpx.Timeout(10.0, connect=5.0))
-        self.cache: dict[str, dict] = {}
-
-    # 规则快筛（不调LLM，0延迟）
-    COMPETITOR_KEYWORDS = [
-        "安克", "anker", "绿联", "ugreen", "正浩", "ecoflow",
-        "华宝", "jackery", "倍思", "baseus", "竞品", "竞争对手",
-        "跟我们比", "友商",
-    ]
-    # 问候语 → 固定回复（0延迟）。匹配规则：完全等于，或问候词在短消息里。
     GREETINGS = {
-        "你好": "你好！我是数据分析助手 👋\n我能帮你：\n· 📊 查数据：销售额、订单、库存、退款…\n· 🆚 竞品分析：比如「分析一下绿联」\n· 💡 解释概念：比如「什么是RFM分析」\n\n想从哪个开始？",
-        "您好": "您好！我是数据分析助手 👋 有什么想查的或想分析的？",
-        "hi": "你好！我是数据分析助手 👋 有什么想查的？",
-        "hello": "你好！我是数据分析助手 👋 有什么想查的？",
-        "hallo": "你好！我是数据分析助手 👋 有什么想查的？",
-        "嗨": "嗨！👋 有什么想查的数据或想分析的竞品？",
-        "在吗": "在的！我是数据分析助手，想查点什么？",
-        "在不在": "在的！我是数据分析助手，想查点什么？",
-        "你是谁": "我是数据分析助手，可以帮你：\n1. 查数据库（销售额/订单/库存/退款/客户…）\n2. 做竞品分析（安克/绿联/正浩/华宝/倍思…）\n3. 解释分析概念（RFM、用户分群、指标含义…）",
-        "能做什么": "我能做这些：\n1. 📊 查数据 — 「上个月销售额」「库存不足的产品」\n2. 🆚 竞品分析 — 「分析一下绿联」\n3. 💡 知识问答 — 「什么是RFM分析」\n\n直接问我即可！",
-        "帮助": "你可以这样问我：\n· 查数据：「上个月卖得最好的5个产品」\n· 竞品：「分析一下安克创新」\n· 概念：「什么是客单价」\n· 趋势：「最近7天销售趋势」",
-        "help": "Try asking me things like:\n· 上个月销售额\n· 库存不足的产品\n· 分析一下绿联\n· 什么是RFM分析",
-        "谢谢": "不客气！还有什么想分析的吗？😊",
-        "感谢": "不客气！还有什么想分析的吗？😊",
-        "再见": "再见！👋 有需要随时找我",
-        "拜拜": "拜拜！👋 有需要随时找我",
+        "你好": "你好！我是电商数据分析助手。可以查询销售、订单、库存、退款、客户和商品数据，也能生成经营诊断、报告与自动化任务。",
+        "您好": "您好！可以直接告诉我指标、对象和时间范围，例如“上月各品类销售额”。",
+        "hi": "你好！请直接告诉我想查询的电商指标和时间范围。",
+        "hello": "你好！请直接告诉我想查询的电商指标和时间范围。",
+        "嗨": "你好！想先看销售、订单、库存还是退款数据？",
+        "在吗": "在的。请直接输入要查询的指标、对象和时间范围。",
+        "在不在": "在的。请直接输入要查询的指标、对象和时间范围。",
+        "你是谁": "我是电商数据分析助手，核心能力是智能问数、经营诊断、数据看板、版本化报告和自动化工作流。",
+        "能做什么": "我支持智能问数、快捷指标、商品与店铺诊断、经营看板、报告生成和自动化工作流。",
+        "帮助": "示例：上月销售额、库存不足的商品、退款率最高的商品、最近 7 天销售趋势。",
+        "help": "示例：上月销售额、库存不足的商品、退款率最高的商品、最近 7 天销售趋势。",
+        "谢谢": "不客气，还需要分析哪个指标？",
+        "感谢": "不客气，还需要分析哪个指标？",
+        "再见": "再见，有需要随时回来查看经营数据。",
+        "拜拜": "再见，有需要随时回来查看经营数据。",
     }
-    # 知识/概念类问题：交LLM回答，避免被下面的SQL关键词规则误判成查数据
-    KNOWLEDGE_KEYWORDS = [
-        "什么是", "啥是", "是什么意思", "解释一下", "介绍一下", "怎么做",
-        "如何", "怎么算", "区别", "概念", "含义", "定义", "原理",
-    ]
+
     QUICK_CARD_KEYWORDS = {
         "monthly_sales": ["本月销售", "这个月卖了多少", "本月营业额"],
         "stock_alert": ["库存不足", "缺货", "库存预警", "快没了"],
-        "last_7days_trend": ["最近7天", "过去一周", "趋势"],
-        "refund_analysis": ["退款", "退货", "退单"],
-        "top5_products": ["卖得最好", "热销", "销量最高", "top"],
-        "category_sales": ["类别销售", "品类占比", "各类别"],
-        "region_sales": ["地区销售", "哪里卖得好", "区域"],
+        "last_7days_trend": ["最近7天", "最近 7 天", "过去一周"],
+        "refund_analysis": ["退款情况", "退货情况", "退单情况"],
+        "top5_products": ["卖得最好", "热销top5", "销量最高的5个"],
+        "category_sales": ["类别销售", "品类占比", "各类别销售"],
+        "region_sales": ["地区销售", "哪里卖得好", "区域销售"],
         "payment_methods": ["支付方式", "微信还是支付宝"],
     }
-    # 数据分析类关键词快筛：命中直接走SQL流水线，跳过Router的LLM调用（省一次往返）
+
     SQL_QUERY_KEYWORDS = [
         "销售", "订单", "库存", "退款", "退货", "客户", "会员", "产品", "商品",
         "销量", "金额", "多少", "排名", "排行", "最高", "最低", "最好", "最差",
         "趋势", "对比", "环比", "同比", "占比", "利润", "毛利", "收入", "成本",
         "地区", "区域", "类别", "品类", "分类", "支付", "评价", "评分", "投诉",
         "上个月", "本月", "这个月", "上月", "最近", "昨天", "今天", "今年", "去年",
-        "查询", "查一下", "统计", "报表", "数据", "卖得", "热销", "增长",
+        "查询", "查一下", "统计", "报表", "数据", "卖得", "热销", "增长", "转化率",
+        "客单价", "复购率", "动销率", "roas", "gmv",
     ]
-    # 市场情报关键词：选品/商品研究
-    # 注意：不含"差评"——"有差评的产品"是内部查询（查product_reviews表），不是市场情报。
-    #       商品研究靠"研究一下/分析一下这个产品"触发。
-    MARKET_INTEL_KEYWORDS = ["选品", "市场机会", "能不能做", "值得卖吗", "竞争怎么样",
-                             "研究一下", "分析一下这个产品", "痛点"]
-    SELECTION_KEYWORDS = ["选品", "市场机会", "能不能做", "值得卖吗", "竞争怎么样"]
-    # 明确的内部数据指标词：命中则视为数据查询，不走进市场情报
-    DATA_OVERRIDE_KEYWORDS = ["上个月", "本月", "这个月", "上月", "最近", "昨天", "今天",
-                              "今年", "去年", "环比", "同比", "销售额", "销量", "订单数",
-                              "订单量", "库存", "成本", "利润", "毛利", "收入", "客户",
-                              "会员", "评价", "投诉"]
-    # 含这些词的查询属于"具体分析意图"（排名/对比/复合条件/类别限定），
-    # 预写SQL卡片无法满足，跳过快捷卡片、走SQL精确生成。
+
     COMPLEX_INTENT_KEYWORDS = [
         "最高的", "最贵的", "最便宜的", "最差的", "最多的", "最少的",
-        "排名", "排行", "对比", "比较", "且", "并", "同时", "还",
-        "每个", "各", "哪个", "哪些", "类别的", "类目", "办公用品",
-        "电子产品", "家居", "服装", "食品",
-        "没有", "无",   # 双重否定/条件筛选（"没有退款的订单"）应走SQL
+        "排名", "排行", "对比", "比较", "且", "并", "同时", "每个", "各",
+        "哪个", "哪些", "类别的", "类目", "没有", "无",
     ]
 
-    def route(self, user_message: str, conversation_history: list = None) -> dict:
-        """
-        分析用户消息，返回处理方案。
+    VAGUE_MESSAGES = {"帮我分析一下", "分析一下", "帮我看看", "看一下", "分析数据"}
+    CONCEPT_PREFIXES = ("什么是", "解释一下", "怎么算", "如何计算", "定义")
 
-        设计：规则只管「确定性快路径」（竞品/快捷卡片/问候/数据关键词），
-        其余一律交给LLM理解意图（聊天/知识/澄清/查数据）。这样Agent才有对话能力。
-        """
-        # 缓存命中
-        if user_message in self.cache:
-            return dict(self.cache[user_message])
+    def __init__(self):
+        self.client = OpenAI(
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
+            timeout=httpx.Timeout(8.0, connect=3.0),
+        )
+        self.cache: dict[str, dict] = {}
 
-        msg = user_message.strip()
-        msg_lower = msg.lower()
+    def route(self, user_message: str, conversation_history: list | None = None) -> dict:
+        """返回统一路由结果；有对话上下文时不复用无上下文缓存。"""
+        message = (user_message or "").strip()
+        if not message:
+            return self._clarify("请输入想分析的指标、对象和时间范围。")
 
-        # 1. 竞品快筛
-        if any(kw in msg_lower for kw in self.COMPETITOR_KEYWORDS):
-            r = {"mode": "competitor", "rewritten": msg, "reason": "竞品关键词"}
-            self.cache[msg] = r
-            return r
+        if not conversation_history and message in self.cache:
+            return dict(self.cache[message])
 
-        # 2. 快捷卡片匹配（预写SQL，0 Token）
-        #    仅处理"单一明确意图"的查询；含排名/对比/复合条件/类别限定等复杂意图时
-        #    跳过卡片，走SQL精确生成（避免"本月销售额最高的5个产品"被"本月销售"卡片截胡）。
+        stripped = message.rstrip("？?！!。.~～ ")
+        lowered = stripped.lower()
+        for greeting, reply in self.GREETINGS.items():
+            if lowered == greeting.lower() or (
+                greeting.lower() in lowered and len(stripped) <= len(greeting) + 3
+            ):
+                return self._cache(message, {"mode": "chat", "reply": reply, "reason": "固定问候快路径"})
+
+        if stripped in self.VAGUE_MESSAGES:
+            return self._clarify("请补充要分析的指标、对象和时间范围。")
+
+        if any(prefix in message for prefix in self.CONCEPT_PREFIXES):
+            metric_reply = self._metric_definition_reply(message)
+            if metric_reply:
+                return self._cache(message, {
+                    "mode": "chat",
+                    "reply": metric_reply,
+                    "reason": "指标语义目录快路径",
+                })
+            return self._llm_route(message, conversation_history)
+
         for card_key, patterns in self.QUICK_CARD_KEYWORDS.items():
-            if any(p in msg for p in patterns):
-                if any(c in msg for c in self.COMPLEX_INTENT_KEYWORDS):
+            if any(pattern in lowered for pattern in patterns):
+                if any(keyword in message for keyword in self.COMPLEX_INTENT_KEYWORDS):
                     break
-                r = {"mode": "quick_card", "card_key": card_key, "reason": "快捷卡片匹配"}
-                self.cache[msg] = r
-                return r
+                return self._cache(message, {
+                    "mode": "quick_card",
+                    "card_key": card_key,
+                    "reason": "预写查询快路径",
+                })
 
-        # 3. 问候语 → 固定回复（0延迟，恢复对话能力）
-        stripped = msg.strip().rstrip("？?！!。.~～ ")
-        for greet, reply in self.GREETINGS.items():
-            if stripped == greet or (greet in stripped and len(stripped) <= len(greet) + 3):
-                r = {"mode": "chat", "reply": reply, "reason": "问候语"}
-                self.cache[msg] = r
-                return r
+        if len(message) >= 3 and any(keyword in lowered for keyword in self.SQL_QUERY_KEYWORDS):
+            return self._cache(message, {
+                "mode": "sql_query",
+                "rewritten": message,
+                "reason": "数据指标规则命中",
+            })
 
-        # 4. 知识/概念类问题 → 交给LLM回答（先于SQL规则，避免误判成查数据）
-        if any(kw in msg for kw in self.KNOWLEDGE_KEYWORDS):
-            return self._llm_route(msg, conversation_history)
+        return self._llm_route(message, conversation_history)
 
-        # 3.5 市场情报（选品/商品研究）—— 先于SQL，但数据查询优先
-        if any(kw in msg for kw in self.MARKET_INTEL_KEYWORDS) \
-                and not any(k in msg for k in self.DATA_OVERRIDE_KEYWORDS):
-            sub = "selection" if any(kw in msg for kw in self.SELECTION_KEYWORDS) else "product"
-            r = {"mode": "market_intelligence", "sub": sub, "query": msg, "reason": "市场情报关键词"}
-            self.cache[msg] = r
-            return r
-
-        # 5. 数据分析类问题快筛（命中直接走SQL流水线，不调LLM）
-        if len(msg) >= 4 and any(kw in msg for kw in self.SQL_QUERY_KEYWORDS):
-            r = {"mode": "sql_query", "rewritten": msg, "reason": "数据分析关键词"}
-            self.cache[msg] = r
-            return r
-
-        # 6. 兜底：调LLM（聊天/知识/澄清/查数据，由LLM理解意图）
-        return self._llm_route(msg, conversation_history)
-
-    def _llm_route(self, user_message: str, conversation_history: list = None) -> dict:
-        """LLM兜底路由（仅规则快筛失败时调用，静默降级）"""
+    def _llm_route(self, user_message: str, conversation_history: list | None = None) -> dict:
         history_text = ""
         if conversation_history:
-            recent = conversation_history[-6:]
-            history_text = "对话历史:\n" + "\n".join(
-                f"  {m.get('role','?')}: {str(m.get('content',''))[:80]}"
-                for m in recent
+            recent = conversation_history[-4:]
+            history_text = "\n".join(
+                f"{item.get('role', '?')}: {str(item.get('content', ''))[:100]}"
+                for item in recent
             )
 
         try:
@@ -207,38 +160,75 @@ class AgentRouter:
                 model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": ROUTER_PROMPT},
-                    {"role": "user", "content": f"{history_text}\n用户: {user_message}"},
+                    {"role": "user", "content": f"对话历史：\n{history_text}\n用户请求：{user_message}"},
                 ],
-                temperature=0.1, max_tokens=300,
+                temperature=0,
+                max_tokens=220,
+                response_format={"type": "json_object"},
             )
             raw = response.choices[0].message.content
             if not raw:
-                raise ValueError("LLM返回空内容")
+                raise ValueError("路由模型返回空内容")
             result = json.loads(raw)
-        except Exception:
-            # 静默降级：LLM不可用时，问候语给固定回复，否则默认查数据
-            stripped = user_message.strip().rstrip("？?！!。.~～ ")
-            for greet, reply in self.GREETINGS.items():
-                if stripped == greet or (greet in stripped and len(stripped) <= len(greet) + 3):
-                    return {"mode": "chat", "reply": reply, "reason": "LLM不可用，问候语兜底"}
-            result = {"mode": "sql_query", "rewritten": user_message,
-                      "reason": "LLM不可用，默认查数据"}
-            self.cache[user_message] = dict(result)
-            return result
+            if result.get("mode") not in _ALLOWED_MODES:
+                raise ValueError("路由模型返回未知模式")
+        except Exception as error:
+            logger.warning("路由模型不可用，启用本地兜底: %s", error)
+            return self._offline_fallback(user_message)
 
-        # clarify模式补上反问
-        if result.get("mode") == "clarify" and not result.get("follow_up_questions"):
+        if result["mode"] == "clarify" and not result.get("follow_up_questions"):
             result["follow_up_questions"] = [
-                "您想分析哪个指标？比如销售额、订单数、库存等",
-                "需要什么时间范围？比如本月、上个月、今年",
+                "您想分析哪个指标？",
+                "需要查看什么时间范围？",
             ]
-
-        # 缓存
-        if len(self.cache) < 50:
-            self.cache[user_message] = dict(result)
-
-        logger.info(f"[Router] mode={result.get('mode')} reason={result.get('reason','')[:50]}")
+        if result["mode"] == "sql_query":
+            result["rewritten"] = result.get("rewritten") or user_message
+        if not conversation_history:
+            self._cache(user_message, result)
         return result
+
+    @staticmethod
+    def _metric_definition_reply(question: str) -> str:
+        from domain.metric_registry import metric_registry
+
+        normalized = question.lower()
+        for definition in metric_registry.list():
+            if definition.name.lower() in normalized or definition.metric_key.lower() in normalized:
+                return (
+                    f"{definition.name}：{definition.description} "
+                    f"计算口径：{definition.formula}；单位：{definition.unit}；"
+                    f"指标版本：{definition.version}。"
+                )
+        return ""
+
+    def _offline_fallback(self, user_message: str) -> dict:
+        if any(keyword in user_message.lower() for keyword in self.SQL_QUERY_KEYWORDS):
+            return {
+                "mode": "sql_query",
+                "rewritten": user_message,
+                "reason": "路由模型不可用，数据规则兜底",
+            }
+        if not re.search(r"[A-Za-z\u4e00-\u9fff]", user_message):
+            return self._clarify("请输入想分析的电商数据问题。")
+        return {
+            "mode": "chat",
+            "reply": "当前仅支持电商数据查询、经营诊断、报告和自动化工作流。请提供指标、对象与时间范围。",
+            "reason": "路由模型不可用，能力边界兜底",
+        }
+
+    def _clarify(self, reply: str) -> dict:
+        return {
+            "mode": "clarify",
+            "reply": reply,
+            "follow_up_questions": ["您想分析哪个指标？", "需要查看什么时间范围？"],
+            "reason": "缺少必要查询条件",
+        }
+
+    def _cache(self, key: str, value: dict) -> dict:
+        if len(self.cache) >= 100:
+            self.cache.clear()
+        self.cache[key] = dict(value)
+        return dict(value)
 
 
 agent_router = AgentRouter()

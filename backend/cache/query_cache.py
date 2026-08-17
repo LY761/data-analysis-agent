@@ -3,7 +3,7 @@
 对相同问题+相同Schema → 直接返回缓存结果，跳过LLM调用。
 
 存储位置: 缓存表建在 demo_sales.db 中，不额外创建文件
-缓存键: MD5(用户问题 + Schema指纹) → Schema变了自动失效
+缓存键: SHA256(问题 + Schema + 租户/权限/数据源/模型版本)
 TTL: 5分钟（可配），过期自动清理
 """
 import hashlib
@@ -40,13 +40,17 @@ def _ensure_table():
     _table_created = True
 
 
-def _build_key(question: str, schema_hash: str = "") -> str:
-    """构建缓存键: MD5(问题 + Schema指纹)"""
-    raw = f"{question}|{schema_hash}"
-    return hashlib.md5(raw.encode()).hexdigest()
+def _build_key(question: str, schema_hash: str = "", scope: dict | None = None) -> str:
+    """构建隔离缓存键，避免跨租户、跨权限和跨数据源复用。"""
+    payload = {
+        "question": " ".join(question.strip().lower().split()),
+        "schema_hash": schema_hash,
+        "scope": scope or {},
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
-
-def get_cached_result(question: str, schema_hash: str = "") -> dict | None:
+def get_cached_result(question: str, schema_hash: str = "", scope: dict | None = None) -> dict | None:
     """
     查缓存。命中返回结果dict，未命中返回None。
     """
@@ -54,7 +58,7 @@ def get_cached_result(question: str, schema_hash: str = "") -> dict | None:
     _cleanup_expired()
 
     try:
-        key = _build_key(question, schema_hash)
+        key = _build_key(question, schema_hash, scope)
         conn = sqlite3.connect(DEMO_DB_PATH)
         row = conn.execute(
             "SELECT result_json FROM query_cache WHERE cache_key = ? AND expires_at > ?",
@@ -75,7 +79,13 @@ def get_cached_result(question: str, schema_hash: str = "") -> dict | None:
         return None
 
 
-def set_cached_result(question: str, schema_hash: str, result: dict, ttl: int = None) -> None:
+def set_cached_result(
+    question: str,
+    schema_hash: str,
+    result: dict,
+    ttl: int | None = None,
+    scope: dict | None = None,
+) -> None:
     """
     写缓存。
     ttl: 过期时间（秒），默认用配置的 CACHE_TTL
@@ -85,7 +95,7 @@ def set_cached_result(question: str, schema_hash: str, result: dict, ttl: int = 
         ttl = CACHE_TTL
 
     try:
-        key = _build_key(question, schema_hash)
+        key = _build_key(question, schema_hash, scope)
         now = time.time()
         conn = sqlite3.connect(DEMO_DB_PATH)
         conn.execute(

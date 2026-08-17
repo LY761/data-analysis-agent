@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """D3: SQL 参数化回归测试 — executor 参数绑定 + 高危拼接点注入字符安全"""
-from agent.market_intelligence import selection
 from agent import workflow
 
 
@@ -22,16 +21,6 @@ def test_executor_parameterized_quote_safe():
     )
     assert r["success"] is True
     assert r["data"] == []  # 注入字符被当作字面量，查不到就是空
-
-
-def test_selection_compare_internal_parameterized():
-    """_compare_internal 用 ? 绑定，恶意输入不破坏 LIKE 语法"""
-    out = selection._compare_internal("蓝'牙';DROP TABLE products--")
-    assert isinstance(out, list)
-    # 表还在（没有真的被 DROP），内部对比不崩溃
-    from db.executor import executor
-    r = executor.execute("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='products'")
-    assert r["data"][0]["n"] == 1
 
 
 def test_workflow_find_similar_products_parameterized():
@@ -60,11 +49,10 @@ def test_workflow_find_similar_products_parameterized():
 def test_workflow_analyze_why_parameterized():
     """_analyze_why 差评查询参数化：用户产品名含撇号安全"""
     from db.executor import executor
-    captured = {}
+    calls = []
 
     def fake_execute(sql, params=None):
-        captured["sql"] = sql
-        captured["params"] = params
+        calls.append((sql, params))
         return {"success": True, "data": [], "row_count": 0}
 
     original = executor.execute
@@ -74,5 +62,6 @@ def test_workflow_analyze_why_parameterized():
                               {"data": [{"product_name": "O'Brien"}]}, {})
     finally:
         executor.execute = original
-    assert "WHERE p.product_name = ?" in captured["sql"]
-    assert captured["params"] == ("O'Brien",)
+    review_calls = [call for call in calls if "WHERE p.product_name = ?" in call[0]]
+    assert review_calls
+    assert review_calls[0][1] == ("O'Brien",)

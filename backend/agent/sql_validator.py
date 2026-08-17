@@ -1,5 +1,5 @@
 """
-SQL校验器 — 四道闸门确保LLM生成的SQL安全可执行
+SQL校验器 — 五道闸门确保LLM生成的SQL安全可执行
 
 v4.0: 新增第4道闸门"Schema存在性校验"——用sqlglot解析SQL，
      拦截引用了数据库里不存在表名/字段名的幻觉SQL（最常见的幻觉来源）。
@@ -13,7 +13,7 @@ from config import DEMO_DB_PATH
 
 
 class SQLValidator:
-    """SQL四道闸门校验：语法校验 → 注入检测 → 权限校验 → Schema存在性校验"""
+    """SQL五道闸门校验：语法 → 注入 → 只读 → 表权限 → Schema存在性"""
 
     # 真实Schema缓存（表→字段集合），短TTL，DB切换后最多30s内更新
     _schema_cache: dict = {}
@@ -65,7 +65,12 @@ class SQLValidator:
         if not perm_result["valid"]:
             return {"valid": False, "error": perm_result["error"], "stage": "permission"}
 
-        # 第四道闸门：Schema存在性校验（拦截幻觉表名/字段名）
+        # 第四道闸门：按当前认证上下文校验表级访问权限。
+        access_result = self._check_table_access(sql)
+        if not access_result["valid"]:
+            return {"valid": False, "error": access_result["error"], "stage": "table_permission"}
+
+        # 第五道闸门：Schema存在性校验（拦截幻觉表名/字段名）
         schema_result = self._check_schema_identifiers(sql)
         if not schema_result["valid"]:
             return {"valid": False, "error": schema_result["error"], "stage": "schema"}
@@ -100,6 +105,45 @@ class SQLValidator:
         if sql_stripped.startswith("SELECT") or sql_stripped.startswith("WITH"):
             return {"valid": True, "error": None}
         return {"valid": False, "error": "权限不足：仅允许SELECT查询操作。"}
+
+    def _check_table_access(self, sql: str) -> dict:
+        """校验 SQL 引用表是否包含在当前用户权限范围内。"""
+        from middleware.auth_middleware import current_user_ctx
+
+        user = current_user_ctx.get()
+        if not user or user.get("role") == "admin":
+            return {"valid": True, "error": None}
+
+        allowed_tables = {
+            str(table).lower()
+            for table in user.get("permissions", {}).get("tables", [])
+        }
+        if "*" in allowed_tables:
+            return {"valid": True, "error": None}
+
+        try:
+            ast = sqlglot.parse_one(sql)
+            referenced_tables = {
+                table.name.lower()
+                for table in ast.find_all(sqlglot.exp.Table)
+                if table.name
+            }
+            cte_names = {
+                cte.alias_or_name.lower()
+                for cte in ast.find_all(sqlglot.exp.CTE)
+                if cte.alias_or_name
+            }
+        except Exception:
+            return {"valid": False, "error": "无法确认查询表权限，已拒绝执行。"}
+
+        denied_tables = referenced_tables - cte_names - allowed_tables
+        if denied_tables:
+            return {
+                "valid": False,
+                "error": f"无权访问数据表：{', '.join(sorted(denied_tables))}",
+            }
+        return {"valid": True, "error": None}
+
 
     def _get_db_schema(self, max_age: int = 30) -> dict:
         """读取真实数据库Schema（表→字段名集合），短TTL缓存。异常时返回空dict（本闸门自动放行）。"""

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>数据分析 Agent</title>
+<title>CommerceMind · 电商数据分析 Agent</title>
 <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 <style>
 :root {
@@ -252,32 +252,44 @@ body {
 #quickQueryGrid .quick-card .icon { font-size: 18px; display: block; margin-bottom: 3px; }
 #quickQueryGrid .quick-card .label { font-weight: 600; font-size: 11px; color: var(--text); }
 </style>
+<link rel="stylesheet" href="workspace.css">
 </head>
 <body>
 
+<nav class="module-nav" id="moduleNav" aria-label="业务模块导航">
+  <div class="module-brand">
+    <div class="brand-mark">CM</div>
+    <div class="brand-copy"><strong>CommerceMind</strong><span>AI Operations</span></div>
+  </div>
+  <div class="nav-group-label">经营工作台</div>
+  <button class="module-link" data-module="dashboard"><span class="nav-icon">⌂</span><span>经营驾驶舱</span></button>
+  <button class="module-link active" data-module="chat"><span class="nav-icon">✦</span><span>智能问数</span></button>
+  <button class="module-link" data-module="products"><span class="nav-icon">◫</span><span>商品运营</span></button>
+  <button class="module-link" data-module="reports"><span class="nav-icon">▤</span><span>报告中心</span></button>
+  <button class="module-link" data-module="automation"><span class="nav-icon">↻</span><span>自动化中心</span></button>
+  <div class="nav-group-label">平台能力</div>
+  <button class="module-link" data-module="capabilities"><span class="nav-icon">◇</span><span>能力地图</span></button>
+  <button class="module-link" data-module="data"><span class="nav-icon">⇅</span><span>数据管理</span></button>
+  <button class="module-link" data-module="integrations"><span class="nav-icon">⌘</span><span>企业接入</span></button>
+  <button class="module-link" data-module="evaluation"><span class="nav-icon">✓</span><span>Agent 评测</span></button>
+  <div class="nav-footer">
+    <span class="runtime-dot"></span>
+    <div><strong>Demo Workspace</strong><span>本地运行 · 可审计</span></div>
+  </div>
+</nav>
+
 <!-- Left sidebar: 快捷卡片 -->
-<div class="sidebar" id="sidebar">
+<div class="sidebar expanded" id="sidebar">
   <div class="sidebar-inner">
-    <button class="quick-tab" id="quickTab" onclick="toggleQuickPanel()" title="快捷卡片">快捷卡片</button>
-    <button class="quick-tab" id="marketTab" onclick="toggleMarketPanel()" title="市场情报">🛒 市场情报</button>
-    <div class="panel-content" id="panelContent">
-      <h4>📊 快捷查询</h4>
-      <div class="quick-grid" id="quickQueryGrid"></div>
-      <h4>📈 商业智能</h4>
-      <div class="quick-grid">
-        <div class="quick-card" onclick="runQuickAction('anomalies')"><div class="icon">🚨</div><div class="label">异常检测</div><div class="desc">销售额/退款异常</div></div>
-        <div class="quick-card" onclick="runQuickAction('trends')"><div class="icon">📉</div><div class="label">趋势预警</div><div class="desc">销量连续下滑</div></div>
-        <div class="quick-card" onclick="runQuickAction('daily_report')"><div class="icon">📋</div><div class="label">运营日报</div><div class="desc">LLM生成总结</div></div>
-      </div>
+    <div class="quick-panel-head">
+      <div><strong>快捷分析</strong><span>预写 SQL · 0 Token</span></div>
+      <button class="quick-tab active" id="quickTab" onclick="toggleQuickPanel()" title="收起快捷分析" aria-label="收起快捷分析">‹</button>
     </div>
-    <div class="panel-content" id="marketPanel" style="display:none;">
-      <h4>🛒 市场情报</h4>
-      <div class="quick-grid">
-        <div class="quick-card" onclick="openMarketSelection()"><div class="icon">🔍</div><div class="label">选品分析</div><div class="desc">找蓝海品类机会</div></div>
-        <div class="quick-card" onclick="openMarketProduct()"><div class="icon">📦</div><div class="label">商品研究</div><div class="desc">深挖卖点与痛点</div></div>
-        <div class="quick-card" onclick="openPasteModal('product')"><div class="icon">📋</div><div class="label">粘贴数据分析</div><div class="desc">贴真实信息，绕过反爬</div></div>
-        <div class="quick-card" onclick="runQuickAction('competitor')"><div class="icon">🆚</div><div class="label">竞品分析</div><div class="desc">LLM分析竞品数据</div></div>
-      </div>
+    <div class="panel-content" id="panelContent">
+      <div class="quick-intro">高频指标走确定性查询，响应更快、口径更稳定。</div>
+      <h4>常用经营指标</h4>
+      <div class="quick-grid" id="quickQueryGrid"></div>
+      <div class="quick-tip"><span>i</span> 复杂问题请切换到智能问数，Agent 会先检索 Schema 再生成只读 SQL。</div>
     </div>
   </div>
 </div>
@@ -285,24 +297,55 @@ body {
 <!-- Main content -->
 <div class="main-wrap">
 <div class="header">
-  <h1><span>📊</span> 数据分析 Agent</h1>
+  <div class="header-title">
+    <span class="header-eyebrow">Ecommerce intelligence workspace</span>
+    <h1 id="workspaceTitle"><span class="title-mark"></span>智能问数</h1>
+    <p id="workspaceSubtitle">用自然语言查询经营数据，结果可追溯到 SQL、口径和数据证据。</p>
+  </div>
   <div class="header-tools">
-    <button class="tool-btn" onclick="exportExcel()" title="导出当前查询结果为Excel">📥 导出Excel</button>
-    <button class="tool-btn" onclick="openDbModal()" title="管理数据库连接">🗄️ 数据库</button>
-    <button class="tool-btn" onclick="window.open('metrics.html')" title="检索质量看板">📈 指标看板</button>
-    <button class="tool-btn" onclick="openHistoryModal()" title="查看历史对话">🕘 历史</button>
-    <button class="tool-btn" onclick="openKbModal()" title="企业知识库（文档问答）">📚 知识库</button>
+    <span class="env-chip"><span></span>Demo 数据</span>
+    <button class="tool-btn" onclick="exportExcel()" title="导出当前查询结果为 Excel"><span>⇩</span>导出</button>
+    <button class="tool-btn" onclick="openDbModal()" title="管理数据库连接"><span>▣</span>数据源</button>
+    <button class="tool-btn" onclick="window.open('metrics.html')" title="检索质量看板"><span>⌁</span>质量</button>
+    <button class="tool-btn" onclick="openHistoryModal()" title="查看历史对话"><span>◷</span>历史</button>
   </div>
 </div>
 
-<div class="chat" id="chat"></div>
+<section class="workspace-view module-view" id="moduleView" hidden>
+  <div class="module-toolbar" id="moduleToolbar"></div>
+  <div class="module-content" id="moduleContent"></div>
+</section>
+
+<section class="workspace-view chat-view" id="chatView">
+<div class="chat" id="chat">
+  <div class="welcome" id="welcome">
+    <div class="welcome-badge"><span>✦</span> Enterprise Analytics Agent</div>
+    <h2>今天想从经营数据里<br><em>发现什么？</em></h2>
+    <p>从自然语言到可执行 SQL，再到图表与业务结论。每一步都保留口径、权限与审计证据。</p>
+    <div class="welcome-capabilities">
+      <span><b>01</b> Schema 混合检索</span>
+      <span><b>02</b> 只读 SQL 安全校验</span>
+      <span><b>03</b> 确定性指标口径</span>
+    </div>
+    <div class="examples">
+      <button class="example" onclick="sendExample('上月各品类销售额和环比变化')"><span>↗</span>上月各品类销售额和环比变化</button>
+      <button class="example" onclick="sendExample('找出退款率最高的商品并解释原因')"><span>↗</span>找出退款率最高的商品并解释原因</button>
+      <button class="example" onclick="sendExample('库存不足且近7天销量增长的商品')"><span>↗</span>库存不足且销量增长的商品</button>
+    </div>
+  </div>
+</div>
 
 <div class="input-area">
-  <div class="input-row" id="inputRow">
-    <textarea id="input" rows="1" placeholder="问数据问题，或输入竞品名称进行分析..." onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+  <div class="composer-shell">
+    <div class="input-row" id="inputRow">
+      <span class="composer-icon">✦</span>
+      <textarea id="input" rows="1" placeholder="询问销售、商品、库存、退款或客户数据…" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="发送问题">↑</button>
+    </div>
+    <div class="composer-meta"><span>Enter 发送 · Shift + Enter 换行</span><span>只读查询 · 自动脱敏 · 全链路追踪</span></div>
   </div>
-  <button class="send-btn" id="sendBtn" onclick="sendMessage()">发送</button>
 </div>
+</section>
 </div>
 
 <script>
@@ -328,7 +371,7 @@ function buildQuickCards() {
   const grid = document.getElementById('quickQueryGrid');
   if (!grid) return;
   grid.innerHTML = QUICK_QUERIES.map(q =>
-    `<div class="quick-card" onclick="runQuickCard('${q.key}','${q.label}')"><div class="icon">${q.icon}</div><div class="label">${q.label}</div></div>`
+    `<button class="quick-card" onclick="runQuickCard('${q.key}','${q.label}')"><span class="icon">${q.icon}</span><span class="label">${q.label}</span></button>`
   ).join('');
 }
 
@@ -338,7 +381,7 @@ let messages = [];
 let chartInst = null;
 let lastResult = null;  // 最近一次结构化查询结果（供导出Excel使用）
 
-const CHAT_STORAGE_KEY = 'agent_chat_messages';
+const CHAT_STORAGE_KEY = 'agent_chat_messages_v2';
 
 function addMessage(role, content) {
   messages.push({role, content, id: Date.now()});
@@ -362,7 +405,7 @@ function renderMessages() {
   // Rebuild all messages
   let html = messages.length === 0 ? (welcome ? welcome.outerHTML : '') : '';
   for (const m of messages) {
-    const avatar = m.role === 'user' ? '👤' : '🤖';
+    const avatar = m.role === 'user' ? 'ME' : 'AI';
     html += `<div class="msg ${m.role}">
       <div class="avatar">${avatar}</div>
       <div class="bubble">${m.content}</div>
@@ -379,7 +422,7 @@ function addLoading() {
   const div = document.createElement('div');
   div.className = 'msg assistant';
   div.id = 'loadingMsg';
-  div.innerHTML = '<div class="avatar">🤖</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>';
+  div.innerHTML = '<div class="avatar">AI</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>';
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
 }
@@ -421,7 +464,7 @@ async function sendMessage(text) {
       streamEl = document.createElement('div');
       streamEl.className = 'msg assistant';
       streamEl.id = 'streamMsg';
-      streamEl.innerHTML = '<div class="avatar">🤖</div><div class="bubble" id="streamBubble"></div>';
+      streamEl.innerHTML = '<div class="avatar">AI</div><div class="bubble" id="streamBubble"></div>';
       chat.appendChild(streamEl);
     }
     return streamEl;
@@ -474,16 +517,10 @@ async function sendMessage(text) {
   });
 
   try {
-    // 市场情报关键词 → /api/market/stream，否则走普通查询流
-    // 命中知识/数据词（什么是、上个月/销售额/成本/利润 等 DATA_OVERRIDE 词）→ 走普通查询流，
-    // 避免 "什么是选品"/"上个月的选品销量" 误投到 market_stream 成死端。
-    const isMarket = /选品|市场机会|研究一下|能不能做|值得卖吗|差评|痛点|分析一下这个产品|竞争怎么样/.test(query)
-      && !/什么是|上个月|本月|这个月|上月|最近|昨天|今天|今年|去年|环比|同比|销售额|销量|订单数|订单量|库存|成本|利润|毛利|收入|客户|会员|评价|投诉/.test(query);
-    const url = isMarket ? '/api/market/stream' : '/api/query/stream';
-    const res = await fetch(url, {
+    const res = await fetch('/api/query/stream', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(isMarket ? {query: query} : {question: query}),
+      body: JSON.stringify({question: query}),
     });
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
 
@@ -539,12 +576,12 @@ async function sendMessage(text) {
         // 结构化结果（SQL/数据/图表）用完整卡片
         addMessage('assistant', formatResponse(finalData, query));
       } else {
-        // 纯文本回复（聊天/知识/竞品）：保留已打字的回答，避免被卡片替换
+        // 纯文本回复：保留已打字的回答，避免被卡片替换
         const text = answerBuf || finalData.chat_reply || '';
         addMessage('assistant', text ? renderMarkdown(text) : formatResponse(finalData, query));
       }
     } else if (answerBuf) {
-      // 纯聊天/知识回答
+      // 纯文本回答
       addMessage('assistant', renderMarkdown(answerBuf));
     } else {
       addMessage('assistant', '<p>✅ 查询完成，但没有返回数据。</p>');
@@ -575,11 +612,10 @@ function autoResize(el) {
 }
 
 // ==================== Format Response ====================
-let mkSeq = 0;  // 市场卡片唯一id计数器（同毫秒多次渲染也保证不冲突）
 function formatResponse(data, question) {
   let html = '';
 
-  // Chat / Knowledge mode
+  // Direct reply mode
   if (data.chat_reply && !data.sql && !data.clarification_needed) {
     html += renderMarkdown(data.chat_reply);
     return html;
@@ -604,47 +640,6 @@ function formatResponse(data, question) {
     if (data.warnings && data.warnings.length) {
       html += '<p style="font-size:12px;color:var(--warning);">⚠️ 重试了' + data.retry_count + '次</p>';
     }
-    return html;
-  }
-
-  // Market intelligence: 选品分析卡片
-  if (data.recommendation) {
-    const rec = data.recommendation;
-    const mk_uid = 'mk_' + (++mkSeq) + '_' + Date.now();
-    html += '<div style="font-size:14px;line-height:1.8;">'
-      + '<h3>📊 ' + escapeHtml(data.category || '') + ' 选品机会</h3>'
-      + '<p>评分：' + escapeHtml(rec.score ?? '-') + '/100 · ' + escapeHtml(rec.verdict || '') + '</p>'
-      + '<p>建议价格带：' + escapeHtml(rec.price_band || '-') + '</p>'
-      + '<p>竞争强度：' + escapeHtml(rec.competition || '-') + '</p>'
-      + '<p>' + escapeHtml(rec.reasoning || '') + '</p>';
-    if (rec.differentiation) html += '<p><strong>🎯 差异化方向：</strong>' + escapeHtml(rec.differentiation) + '</p>';
-    if (Array.isArray(rec.risks) && rec.risks.length) {
-      html += '<p><strong>⚠️ 主要风险：</strong></p><ul style="margin:4px 0 8px 18px;padding-left:0;">'
-        + rec.risks.map(r => '<li>' + escapeHtml(r || '') + '</li>').join('')
-        + '</ul>';
-    }
-    if (data.profile) html += '<p style="margin-top:6px;padding:8px;background:var(--bg);border-radius:8px;font-size:13px;"><strong>📋 品类画像：</strong><br>' + escapeHtml(data.profile).replace(/\n/g,'<br>') + '</p>';
-    html += '</div>';
-    if (data.products && data.products.length) {
-      html += '<button class="toggle-btn" onclick="toggleSection(\'' + mk_uid + '\')">📄 产品数据 (' + data.products.length + '个)</button>';
-      html += '<div id="' + mk_uid + '" class="toggle-section"><table style="width:100%;border-collapse:collapse;">'
-        + '<tr><th style="text-align:left;">产品</th><th>价格</th><th>评分</th><th>评论</th></tr>'
-        + data.products.map(p => '<tr><td>' + escapeHtml((p.title||'').slice(0,30)) + '</td><td>' + escapeHtml(p.price ?? '-') + '</td><td>' + escapeHtml(p.rating ?? '-') + '</td><td>' + escapeHtml(p.review_count ?? '-') + '</td></tr>').join('')
-        + '</table></div>';
-    }
-    return html;
-  }
-
-  // Market intelligence: 商品研究卡片
-  if (data.sellpoints || data.pains || data.suggestions) {
-    const prod = data.product || {};
-    html += '<div style="font-size:14px;line-height:1.8;">';
-    html += '<h3>📦 ' + escapeHtml(prod.title || data.query || '') + '</h3>';
-    if (prod.price) html += '<p>参考价格：' + escapeHtml(prod.price) + '</p>';
-    if (data.sellpoints) html += '<p><strong>💡 核心卖点</strong></p>' + renderMarkdown(data.sellpoints);
-    if (data.pains) html += '<p><strong>⚠️ 用户痛点</strong></p>' + renderMarkdown(data.pains);
-    if (data.suggestions) html += '<p><strong>🚀 改进建议</strong></p>' + renderMarkdown(data.suggestions);
-    html += '</div>';
     return html;
   }
 
@@ -721,90 +716,27 @@ function formatResponse(data, question) {
 function toggleQuickPanel() {
   const sidebar = document.getElementById('sidebar');
   const tab = document.getElementById('quickTab');
-  const mtab = document.getElementById('marketTab');
-  const panelContent = document.getElementById('panelContent');
-  const marketPanel = document.getElementById('marketPanel');
   sidebar.classList.toggle('expanded');
   const expanded = sidebar.classList.contains('expanded');
   tab.classList.toggle('active', expanded);
-  if (mtab) mtab.classList.remove('active');
-  if (panelContent) panelContent.style.display = '';
-  if (marketPanel) marketPanel.style.display = 'none';
+  tab.textContent = expanded ? '‹' : '›';
+  tab.title = expanded ? '收起快捷分析' : '展开快捷分析';
+  tab.setAttribute('aria-label', tab.title);
 }
 
 function hideQuickPanel() {
+  if (window.innerWidth > 1080) return;
   const sidebar = document.getElementById('sidebar');
   const tab = document.getElementById('quickTab');
-  sidebar.classList.remove('expanded');
-  tab.classList.remove('active');
-}
-
-// Close sidebar when clicking outside on the main content area
-document.querySelector('.main-wrap').addEventListener('click', e => {
-  const sidebar = document.getElementById('sidebar');
-  if (sidebar.classList.contains('expanded')) {
-    hideQuickPanel();
-  }
-});
-
-// ==================== Quick Actions ====================
-function hideQuickPanel() {
-  const sidebar = document.getElementById('sidebar');
   if (sidebar) sidebar.classList.remove('expanded');
-  const tab = document.getElementById('quickTab');
-  const mtab = document.getElementById('marketTab');
-  const panelContent = document.getElementById('panelContent');
-  const marketPanel = document.getElementById('marketPanel');
-  if (tab) tab.classList.remove('active');
-  if (mtab) mtab.classList.remove('active');
-  if (panelContent) panelContent.style.display = '';
-  if (marketPanel) marketPanel.style.display = 'none';
-}
-
-// ==================== Market Panel (市场情报) ====================
-function toggleMarketPanel() {
-  const sidebar = document.getElementById('sidebar');
-  const tab = document.getElementById('quickTab');
-  const mtab = document.getElementById('marketTab');
-  const panelContent = document.getElementById('panelContent');
-  const marketPanel = document.getElementById('marketPanel');
-  const expanded = sidebar.classList.contains('expanded');
-  if (expanded && mtab.classList.contains('active')) {
-    // 再次点击 → 收起
-    sidebar.classList.remove('expanded');
-    mtab.classList.remove('active');
-    panelContent.style.display = '';
-    marketPanel.style.display = 'none';
-  } else {
-    // 展开并显示市场情报面板
-    sidebar.classList.add('expanded');
-    mtab.classList.add('active');
-    if (tab) tab.classList.remove('active');
-    if (panelContent) panelContent.style.display = 'none';
-    marketPanel.style.display = 'block';
+  if (tab) {
+    tab.classList.remove('active');
+    tab.textContent = '›';
+    tab.title = '展开快捷分析';
   }
 }
 
-function openMarketSelection() {
-  hideQuickPanel();
-  const category = prompt('请输入要分析的品类（如：蓝牙耳机、露营灯）：', '');
-  if (category && category.trim()) {
-    const q = '分析一下' + category.trim() + '的选品机会';
-    document.getElementById('input').value = q;
-    sendMessage(q);
-  }
-}
-
-function openMarketProduct() {
-  hideQuickPanel();
-  const input = prompt('请输入产品名或商品链接（如：Anker 蓝牙耳机）：', '');
-  if (input && input.trim()) {
-    const q = '研究一下 ' + input.trim();
-    document.getElementById('input').value = q;
-    sendMessage(q);
-  }
-}
-
+document.querySelector('.main-wrap').addEventListener('click', () => hideQuickPanel());
 async function runQuickCard(key, label) {
   hideQuickPanel();
   addMessage('user', label);
@@ -824,83 +756,6 @@ async function runQuickCard(key, label) {
   } catch(e) {
     removeLoading();
     addMessage('assistant', '❌ 查询失败: ' + e.message);
-  }
-}
-
-async function runQuickAction(type) {
-  hideQuickPanel();
-  // 竞品分析特殊处理
-  if (type === 'competitor') {
-    addMessage('user', '🔍 竞品分析');
-    addLoading();
-    try {
-      const res = await fetch('/api/competitor/list');
-      const data = await res.json();
-      const names = (data.competitors||[]).filter(c=>c.has_data).map(c=>c.name);
-      removeLoading();
-      addMessage('assistant', '📊 可分析的竞品: ' + names.join('、') + '。\\n\\n请直接在输入框输入竞品名称（如"分析安克创新"）开始分析。');
-    } catch(e) { removeLoading(); addMessage('assistant', '❌ 获取竞品列表失败'); }
-    return;
-  }
-  const labels = {anomalies:'异常检测',trends:'趋势预警',daily_report:'运营日报'};
-  const urls = {anomalies:'/api/bi/anomalies',trends:'/api/bi/trends',daily_report:'/api/bi/daily_report'};
-  const label = labels[type];
-  addMessage('user', label);
-  addLoading();
-  try {
-    const res = await fetch(urls[type], {method: type==='daily_report'?'POST':'GET'});
-    const data = await res.json();
-    removeLoading();
-    let content = renderBIResult(type, data);
-    addMessage('assistant', content);
-  } catch(e) {
-    removeLoading();
-    addMessage('assistant', '❌ 分析失败: ' + e.message);
-  }
-}
-
-function renderBIResult(type, data) {
-  if (type === 'anomalies') {
-    let h = '<h3>🚨 异常检测</h3><p style="font-size:12px;color:var(--text-muted);">共' + (data.total||0) + '项</p>';
-    for (const a of (data.items||[])) {
-      const sev = {high:'#f85149',medium:'#d2991d',low:'#58a6ff'}[a.severity]||'#8b949e';
-      h += '<div style="margin:6px 0;padding:8px;background:var(--bg);border-radius:6px;border-left:3px solid ' + sev + ';"><b>' + escapeHtml(a.title) + '</b><br><span style="font-size:12px;color:var(--text-muted);">' + escapeHtml(a.detail) + '</span><br><span style="font-size:11px;">💡 ' + escapeHtml(a.suggestion) + '</span></div>';
-    }
-    if (!(data.items||[]).length) h += '<p style="color:var(--success);">✅ 系统正常</p>';
-    return h;
-  }
-  if (type === 'trends') {
-    let h = '<h3>📉 趋势预警</h3><p>' + escapeHtml(data.summary||'') + '</p>';
-    for (const t of (data.items||[])) {
-      h += '<div style="margin:4px 0;font-size:13px;"><b>' + escapeHtml(t.product) + '</b> 本月¥' + (t.this_month||0).toLocaleString() + ' vs 上月¥' + (t.last_month||0).toLocaleString() + ' <span style="color:var(--error);">↓' + Math.abs(t.change_pct||0) + '%</span></div>';
-    }
-    return h;
-  }
-  if (type === 'daily_report') {
-    let h = '<h3>📋 运营日报 (' + (data.date||'') + ')</h3>';
-    h += '<div style="display:flex;gap:16px;margin:8px 0;">';
-    h += '<div><span style="font-size:10px;color:var(--text-muted);">销售额</span><br><b style="font-size:18px;color:var(--accent);">¥' + ((data.metrics||{}).sales||0).toLocaleString() + '</b></div>';
-    h += '<div><span style="font-size:10px;color:var(--text-muted);">订单</span><br><b style="font-size:18px;">' + ((data.metrics||{}).orders||0) + '</b></div>';
-    h += '</div>';
-    if (data.summary) h += '<p>' + renderMarkdown(data.summary) + '</p>';
-    return h;
-  }
-  return JSON.stringify(data);
-}
-
-// ==================== Competitor ====================
-function quickCompetitor(name) {
-  hideQuickPanel();
-  document.getElementById('input').value = '分析一下' + name;
-  sendMessage('分析一下' + name);
-}
-
-function openCompetitorInput() {
-  hideQuickPanel();
-  const name = prompt('请输入竞品公司名称：', '');
-  if (name && name.trim()) {
-    document.getElementById('input').value = '分析一下' + name.trim();
-    sendMessage('分析一下' + name.trim());
   }
 }
 
@@ -1070,108 +925,14 @@ async function loadHistory() {
   } catch(e) { body.innerHTML = '加载失败: ' + e.message; }
 }
 
-// ==================== 粘贴数据分析（A方案：用户提供真实数据） ====================
-function openPasteModal(preMode) {
-  document.getElementById('pasteMode').value = preMode || 'product';
-  document.getElementById('pasteText').value = '';
-  document.getElementById('pasteModal').classList.add('show');
-  document.getElementById('pasteText').focus();
-}
-
-async function submitPaste() {
-  const mode = document.getElementById('pasteMode').value;
-  const text = document.getElementById('pasteText').value.trim();
-  if (!text) { alert('请先粘贴内容'); return; }
-  closeModal('pasteModal');
-  hideQuickPanel();
-  const modeLabel = {product: '商品研究', selection: '选品分析', competitor: '竞品分析'}[mode];
-  addMessage('user', '📋 粘贴' + modeLabel + '数据');
-  addLoading();
-  try {
-    const res = await fetch('/api/market/paste', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: text, mode: mode}),
-    });
-    const data = await res.json();
-    removeLoading();
-    if (data.error) { addMessage('assistant', '❌ ' + data.error); return; }
-    if (mode === 'competitor') {
-      addMessage('assistant', formatResponse({chat_reply: data.analysis || '分析完成'}, '粘贴竞品分析'));
-    } else {
-      addMessage('assistant', formatResponse(data, '粘贴' + modeLabel));
-    }
-  } catch(e) {
-    removeLoading();
-    addMessage('assistant', '❌ 分析失败: ' + e.message);
-  }
-}
-
-// ==================== 企业知识库（K3/K4） ====================
-function openKbModal() {
-  document.getElementById('kbModal').classList.add('show');
-  loadKb();
-}
-
-async function loadKb() {
-  const body = document.getElementById('kbModalBody');
-  body.innerHTML = '加载中...';
-  try {
-    const res = await fetch('/api/kb/list');
-    const data = await res.json();
-    const docs = data.documents || [];
-    let html = '';
-    if (!docs.length) {
-      html = '<p style="color:var(--text-muted);margin:0 0 8px;">知识库为空。上传企业文档（txt/md/pdf/csv），Agent 就能基于它回答“我们的XX是什么”这类问题。</p>';
-    } else {
-      html = docs.map(d =>
-        '<div class="hist-item"><div class="hist-q">' + escapeHtml(d.doc) + '</div>'
-        + '<div class="hist-meta">' + d.chunks + ' 个片段 · '
-        + '<button class="tool-btn" style="padding:1px 6px;" data-doc="' + encodeURIComponent(d.doc) + '" onclick="deleteKbDoc(this.dataset.doc)">删除</button></div></div>'
-      ).join('');
-    }
-    html += '<div class="adddb-row" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">'
-      + '<input type="file" id="kbFile" accept=".txt,.md,.pdf,.csv" style="font-size:11px;">'
-      + '<button class="tool-btn" onclick="uploadKbDoc()">上传文档</button></div>';
-    body.innerHTML = html;
-  } catch(e) { body.innerHTML = '加载失败: ' + e.message; }
-}
-
-async function uploadKbDoc() {
-  const f = document.getElementById('kbFile').files[0];
-  if (!f) { alert('请先选择文档'); return; }
-  const fd = new FormData();
-  fd.append('file', f);
-  try {
-    const res = await fetch('/api/kb/upload', {method: 'POST', body: fd});
-    const data = await res.json();
-    if (data.error) { alert('上传失败: ' + data.error); return; }
-    alert('✅ 已入库 ' + data.doc + '（' + data.chunks + ' 个片段）。现在可以问它相关问题了');
-    loadKb();
-  } catch(e) { alert('上传失败: ' + e.message); }
-}
-
-async function deleteKbDoc(encDoc) {
-  const doc = decodeURIComponent(encDoc);
-  if (!confirm('删除文档 ' + doc + '？')) return;
-  try {
-    await fetch('/api/kb/' + encodeURIComponent(doc), {method: 'DELETE'});
-    loadKb();
-  } catch(e) { alert('删除失败: ' + e.message); }
-}
-
 // ==================== Init ====================
 document.addEventListener('DOMContentLoaded', () => {
   buildQuickCards();
   document.getElementById('input').focus();
-  // Agent 自动打招呼（仅当无历史消息，避免刷新重复）
-  if (!messages.length) {
-    addMessage('assistant', '你好！我是数据分析助手 👋\n我可以帮你：\n' +
-      '· 📊 查数据：销售额、订单、库存、退款…\n' +
-      '· 🛒 选品分析 / 商品研究 / 竞品分析\n' +
-      '· 📋 粘贴数据分析：把看到的真实信息贴进来\n\n想从哪个开始？');
-  }
 });
 </script>
+<script src="api-client.js"></script>
+<script src="workspace.js"></script>
 
 <!-- 数据库管理模态框 -->
 <div class="modal-mask" id="dbModal" onclick="if(event.target===this)closeModal('dbModal')">
@@ -1185,29 +946,6 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="modal-box">
     <div class="modal-head"><h3>🕘 历史对话</h3><button class="modal-close" onclick="closeModal('histModal')">✕</button></div>
     <div class="modal-body" id="histModalBody">加载中...</div>
-  </div>
-</div>
-<!-- 粘贴数据分析模态框 -->
-<div class="modal-mask" id="pasteModal" onclick="if(event.target===this)closeModal('pasteModal')">
-  <div class="modal-box">
-    <div class="modal-head"><h3>📋 粘贴数据分析</h3><button class="modal-close" onclick="closeModal('pasteModal')">✕</button></div>
-    <div class="modal-body">
-      <p style="margin:0 0 8px;font-size:12px;color:var(--text-muted);">爬虫常被反爬拦截。直接把你看到的真实信息粘贴进来分析（标题、价格、评分、评论、竞品介绍、调研笔记等）。</p>
-      <select id="pasteMode" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:12px;margin-bottom:8px;">
-        <option value="product">📦 商品研究</option>
-        <option value="selection">🔍 选品分析</option>
-        <option value="competitor">🆚 竞品分析</option>
-      </select>
-      <textarea id="pasteText" rows="8" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:12px;resize:vertical;" placeholder="粘贴商品/市场/竞品信息，例如：&#10;Anker 蓝牙耳机 $29.99 评分4.5 4000+评价&#10;主打续航30小时、低延迟…&#10;差评集中在佩戴不适…"></textarea>
-      <div style="text-align:right;margin-top:8px;"><button class="tool-btn" onclick="submitPaste()">开始分析</button></div>
-    </div>
-  </div>
-</div>
-<!-- 企业知识库模态框 -->
-<div class="modal-mask" id="kbModal" onclick="if(event.target===this)closeModal('kbModal')">
-  <div class="modal-box">
-    <div class="modal-head"><h3>📚 企业知识库</h3><button class="modal-close" onclick="closeModal('kbModal')">✕</button></div>
-    <div class="modal-body" id="kbModalBody">加载中...</div>
   </div>
 </div>
 </body>

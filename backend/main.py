@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from api.routes import router
 from db.init_db import init_demo_db, get_schema_descriptions
 from agent.schema_retriever import schema_retriever
-from config import HOST, PORT, DEMO_DB_PATH
+from config import CORS_ORIGINS, HOST, PORT, DEMO_DB_PATH, validate_runtime_config
+
+validate_runtime_config()
 
 # ═══════════════════════════════════════════════════════════════
 # 启动初始化（智能跳过，不重复做）
@@ -34,13 +36,17 @@ else:
 from db.connection_manager import register_demo_db
 register_demo_db()
 
-# 第二步：Schema索引（ChromaDB里有数据就跳过）
-col_count = schema_retriever.collection.count() if hasattr(schema_retriever, 'collection') else 0
+from services.retrieval_metrics import initialize_retrieval_metrics
+initialize_retrieval_metrics(DEMO_DB_PATH)
+
+# 第二步：Schema目录和向量索引
+schemas = get_schema_descriptions()
+schema_retriever.set_schema_catalog(schemas)
+col_count = schema_retriever.collection.count() if hasattr(schema_retriever, "collection") else 0
 if col_count > 0:
     print(f"\n[2/3] Schema索引已存在({col_count}条) — 跳过")
 else:
     print("\n[2/3] 索引数据库Schema到向量库...")
-    schemas = get_schema_descriptions()
     schema_retriever.index_schemas(schemas)
 
 # 第三步：Schema增量更新监听
@@ -59,13 +65,37 @@ app = FastAPI(
     version="3.0.0",
 )
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
 from middleware.auth_middleware import AuthMiddleware
 app.add_middleware(AuthMiddleware)
 
+from api.report_routes import router as report_router
+app.include_router(report_router, prefix="/api")
+
 app.include_router(router, prefix="/api")
+
+from api.integration_routes import router as integration_router
+app.include_router(integration_router, prefix="/api")
+
+from api.capability_routes import router as capability_router
+app.include_router(capability_router, prefix="/api")
+
+from api.semantic_routes import router as semantic_router
+app.include_router(semantic_router, prefix="/api")
+
+from api.data_product_routes import router as data_product_router
+app.include_router(data_product_router, prefix="/api")
+
+from api.workflow_routes import router as workflow_router
+app.include_router(workflow_router, prefix="/api")
+
+from api.dashboard_routes import router as dashboard_router
+app.include_router(dashboard_router, prefix="/api")
+
+from api.evaluation_routes import router as evaluation_router
+app.include_router(evaluation_router, prefix="/api")
 
 
 @app.middleware("http")
@@ -89,7 +119,7 @@ print(f"""
 {'='*60}
 
 快捷查询: 前端10个卡片，点一下出结果（0 Token）
-智能分析: 前端 📊 按钮，差评+建议
+智能分析: 前端分析按钮，差评+建议
 自由提问: 输入框，Agent流水线（意图分类+SQL生成）
 """)
 

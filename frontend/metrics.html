@@ -1,144 +1,105 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>检索质量监控 · 数据分析 Agent</title>
+<title>检索质量 · CommerceMind</title>
 <style>
-:root{--bg:#0f172a;--card:#1e293b;--accent:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--text:#e2e8f0;--muted:#94a3b8}
+:root {
+  --bg:#f3f5f9; --surface:#fff; --surface-2:#f7f8fc; --border:#e2e6ee;
+  --text:#172033; --soft:#3d485d; --muted:#778198; --accent:#5b5ce2;
+  --ok:#16885f; --warn:#b7791f; --err:#c2414e;
+  --shadow:0 1px 2px rgba(16,24,40,.04),0 10px 30px rgba(16,24,40,.055);
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh;padding:24px 32px}
-h1{font-size:22px;margin-bottom:4px}
-h2{font-size:14px;margin-bottom:16px;color:var(--muted);font-weight:400}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}
-.card{background:var(--card);border-radius:10px;padding:16px}
-.card .label{font-size:12px;color:var(--muted);margin-bottom:4px}
-.card .value{font-size:28px;font-weight:700}
-.card .sub{font-size:12px;color:var(--muted);margin-top:4px}
-.ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}
-.row{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap}
-.col{flex:1;min-width:300px}
-.bar-wrap{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px}
-.bar-wrap .label{width:70px;text-align:right;flex-shrink:0}
-.bar-bg{flex:1;height:20px;background:#334155;border-radius:4px;overflow:hidden}
-.bar-fill{height:100%;border-radius:4px;transition:width .5s}
-.bar-wrap .val{width:50px;text-align:right;color:var(--muted);flex-shrink:0}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #334155}
-th{color:var(--muted);font-weight:500;font-size:12px}
-.tok{font-size:11px;color:var(--muted)}
-.footer{margin-top:16px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px}
-.badge-hit{background:#064e3b;color:var(--ok)}
-.badge-vec{background:#451a03;color:var(--warn)}
-.badge-ok{background:#064e3b;color:var(--ok)}
-.badge-err{background:#450a0a;color:var(--err)}
-#recent tr:hover{background:#1e293b}
-a{color:var(--accent);text-decoration:none;font-size:13px}
-a:hover{text-decoration:underline}
+body{min-height:100vh;color:var(--text);background:radial-gradient(circle at 85% -5%,rgba(91,92,226,.09),transparent 27%),var(--bg);font:12px/1.6 Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+button,a{font:inherit}
+.topbar{height:66px;padding:0 clamp(18px,4vw,52px);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);background:rgba(255,255,255,.9);backdrop-filter:blur(14px)}
+.brand{display:flex;align-items:center;gap:11px}.brand-mark{width:36px;height:36px;display:grid;place-items:center;border-radius:11px;color:#fff;background:linear-gradient(145deg,#7677f5,#4b4dd2);box-shadow:0 8px 20px rgba(75,76,202,.23);font-size:10px;font-weight:800}.brand strong{display:block;font-size:12px}.brand span{display:block;color:var(--muted);font-size:8px;letter-spacing:.12em;text-transform:uppercase}
+.back{padding:7px 11px;border:1px solid var(--border);border-radius:9px;color:var(--soft);background:#fff;text-decoration:none;font-size:9px;font-weight:650}.back:hover{color:var(--accent);border-color:#c9cafa}
+main{width:min(1480px,100%);margin:0 auto;padding:32px clamp(16px,4vw,52px) 44px}
+.hero{margin-bottom:24px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.eyebrow{margin-bottom:5px;color:var(--accent);font-size:8px;font-weight:760;letter-spacing:.14em;text-transform:uppercase}.hero h1{font-size:clamp(25px,3vw,38px);line-height:1.15;letter-spacing:-.04em}.hero p{margin-top:8px;color:var(--muted);font-size:10px}.live{padding:7px 10px;display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:999px;color:var(--muted);background:#fff;font-size:9px;white-space:nowrap}.live i{width:6px;height:6px;border-radius:50%;background:#2cb783;box-shadow:0 0 0 3px rgba(44,183,131,.1)}
+.grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:14px}.card{min-width:0;padding:17px;border:1px solid var(--border);border-radius:15px;background:rgba(255,255,255,.95);box-shadow:var(--shadow)}.card .label{color:var(--muted);font-size:9px;font-weight:650}.card .value{margin:12px 0 3px;color:var(--text);font-size:clamp(22px,2.1vw,31px);font-weight:760;line-height:1;letter-spacing:-.04em}.card .sub{color:var(--muted);font-size:8px}.ok{color:var(--ok)!important}.warn{color:var(--warn)!important}.err{color:var(--err)!important}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}.section-head{margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}.section-head strong{font-size:11px}.section-head span{color:var(--muted);font-size:8px}.bar-wrap{display:grid;grid-template-columns:70px 1fr 58px;align-items:center;gap:9px;margin:11px 0;color:var(--soft);font-size:9px}.bar-wrap .label{text-align:left}.bar-bg{height:8px;overflow:hidden;border-radius:999px;background:#eef0f5}.bar-fill{height:100%;border-radius:999px;transition:width .5s ease}.bar-wrap .val{text-align:right;color:var(--muted);font-size:8px}
+.table-card{overflow:hidden}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:9px}th,td{padding:11px 10px;border-bottom:1px solid #edf0f4;text-align:left;white-space:nowrap}th{color:var(--muted);background:#fafbfc;font-size:8px;font-weight:680}td:first-child{max-width:520px;color:var(--soft);overflow:hidden;text-overflow:ellipsis}.tok{color:var(--muted);font-family:"Cascadia Code",monospace}.badge{display:inline-flex;align-items:center;min-height:20px;padding:3px 7px;border-radius:999px;font-size:8px;font-weight:650}.badge-hit,.badge-ok{color:#167652;background:#edf9f5;border:1px solid #c9e9dd}.badge-vec{color:#9a641d;background:#fff8e9;border:1px solid #f0dfbd}.badge-err{color:#af3945;background:#fff1f2;border:1px solid #f0cfd3}
+.empty{padding:40px!important;color:var(--muted);text-align:center!important}.footer{margin-top:14px;padding:0 3px;display:flex;justify-content:space-between;gap:15px;color:var(--muted);font-size:8px}
+@media(max-width:1100px){.grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:720px){.grid{grid-template-columns:repeat(2,1fr)}.row{grid-template-columns:1fr}.hero{align-items:flex-start;flex-direction:column}.footer{flex-direction:column}.topbar{padding-inline:14px}main{padding-top:24px}}
 </style>
 </head>
 <body>
-<h1>📊 检索质量监控</h1>
-<h2>数据分析 Agent · NL2SQL 检索链路健康看板</h2>
-
-<div class="grid" id="kpis"></div>
-
-<div class="row">
-  <div class="col">
-    <div class="card">
-      <div class="label" style="margin-bottom:12px">📈 指标细分</div>
-      <div id="bars"></div>
-    </div>
-  </div>
-  <div class="col">
-    <div class="card">
-      <div class="label" style="margin-bottom:12px">⚡ Token 消耗拆解（平均值）</div>
-      <div id="tokenBars"></div>
-    </div>
-  </div>
-</div>
-
-<div class="card">
-  <div class="label" style="margin-bottom:12px">📋 最近查询</div>
-  <table>
-    <thead><tr><th>问题</th><th>检索</th><th>结果</th><th>Token</th><th>耗时</th></tr></thead>
-    <tbody id="recent"></tbody>
-  </table>
-</div>
-
-<div class="footer">
-  <span id="updatedAt">—</span>
-  <span><span id="totalQueries">0</span> 次查询 · 精度 @k = <span id="precAtK">—</span> · 漏损 <span id="recallGap">0</span> 次</span>
-</div>
-
+<header class="topbar">
+  <div class="brand"><div class="brand-mark">CM</div><div><strong>CommerceMind</strong><span>Observability</span></div></div>
+  <a class="back" href="/">← 返回经营工作台</a>
+</header>
+<main>
+  <section class="hero">
+    <div><div class="eyebrow">Retrieval observability</div><h1>检索质量与 Token 成本</h1><p>持续监控 Schema 混合检索、SQL 生成和回答链路的质量、延迟与成本。</p></div>
+    <div class="live"><i></i><span id="updatedAt">正在读取指标…</span></div>
+  </section>
+  <section class="grid" id="kpis"></section>
+  <section class="row">
+    <article class="card"><div class="section-head"><strong>检索链路</strong><span>关键词优先 · 向量补充</span></div><div id="bars"></div></article>
+    <article class="card"><div class="section-head"><strong>Token 消耗拆解</strong><span>单次查询平均值</span></div><div id="tokenBars"></div></article>
+  </section>
+  <section class="card table-card">
+    <div class="section-head"><strong>最近查询</strong><span>仅展示脱敏后的观测数据</span></div>
+    <div class="table-wrap"><table><thead><tr><th>问题</th><th>检索策略</th><th>结果</th><th>Token</th><th>耗时</th></tr></thead><tbody id="recent"></tbody></table></div>
+  </section>
+  <footer class="footer"><span>指标每 10 秒自动刷新</span><span><span id="totalQueries">0</span> 次查询 · Precision@K <span id="precAtK">—</span> · 召回漏损 <span id="recallGap">0</span> 次</span></footer>
+</main>
 <script>
 const API = '/api/metrics/retrieval';
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 
 async function load() {
   try {
-    const d = await (await fetch(API)).json();
-    render(d);
-    document.getElementById('updatedAt').textContent = '更新于 ' + new Date().toLocaleTimeString();
-  } catch(e) {
-    console.error(e);
+    const response = await fetch(API);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    render(await response.json());
+    document.getElementById('updatedAt').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  } catch (error) {
+    document.getElementById('updatedAt').textContent = '指标服务暂不可用';
+    document.getElementById('recent').innerHTML = '<tr><td class="empty" colspan="5">暂时无法读取检索指标，请确认后端服务已启动。</td></tr>';
   }
 }
 
-function render(d) {
-  const s = d.summary;
-
-  // KPI cards
+function render(data) {
+  const summary = data.summary || {};
   const kpis = [
-    {label:'总查询数', value:s.total_queries, sub:''},
-    {label:'关键词命中率', value:s.keyword_hit_rate+'%', sub:s.vector_fallback_rate+'% 向量降级', cls:s.keyword_hit_rate>=90?'ok':s.keyword_hit_rate>=70?'warn':'err'},
-    {label:'成功率', value:s.success_rate+'%', sub:s.total_queries+' 次查询', cls:s.success_rate>=90?'ok':s.success_rate>=70?'warn':'err'},
-    {label:'召回漏损', value:s.recall_gap_events, sub:'次（SQL用了未检索到的表）', cls:s.recall_gap_events===0?'ok':'err'},
-    {label:'累计Token', value:s.sum_token_total.toLocaleString(), sub:'均 '+s.avg_token_total+' / 次'},
-    {label:'平均延迟', value:(s.avg_total_ms||0).toFixed(0)+'ms', sub:'检索 '+(s.avg_retrieve_ms||0).toFixed(0)+'ms · 生成 '+(s.avg_generate_ms||0).toFixed(0)+'ms'},
+    {label:'总查询数', value:summary.total_queries || 0, sub:'累计观测请求'},
+    {label:'关键词命中率', value:(summary.keyword_hit_rate || 0)+'%', sub:(summary.vector_fallback_rate || 0)+'% 向量补充', cls:summary.keyword_hit_rate>=90?'ok':summary.keyword_hit_rate>=70?'warn':'err'},
+    {label:'执行成功率', value:(summary.success_rate || 0)+'%', sub:(summary.total_queries || 0)+' 次查询', cls:summary.success_rate>=90?'ok':summary.success_rate>=70?'warn':'err'},
+    {label:'召回漏损', value:summary.recall_gap_events || 0, sub:'SQL 使用未召回表', cls:summary.recall_gap_events===0?'ok':'err'},
+    {label:'累计 Token', value:Number(summary.sum_token_total || 0).toLocaleString('zh-CN'), sub:'平均 '+(summary.avg_token_total || 0)+' / 次'},
+    {label:'平均延迟', value:Number(summary.avg_total_ms || 0).toFixed(0)+'ms', sub:'检索 '+Number(summary.avg_retrieve_ms || 0).toFixed(0)+'ms · 生成 '+Number(summary.avg_generate_ms || 0).toFixed(0)+'ms'},
   ];
-  document.getElementById('kpis').innerHTML = kpis.map(k =>
-    `<div class="card"><div class="label">${k.label}</div><div class="value ${k.cls||''}">${k.value}</div><div class="sub">${k.sub}</div></div>`
-  ).join('');
+  document.getElementById('kpis').innerHTML = kpis.map(item => `<article class="card"><div class="label">${escapeHtml(item.label)}</div><div class="value ${item.cls || ''}">${escapeHtml(item.value)}</div><div class="sub">${escapeHtml(item.sub)}</div></article>`).join('');
 
-  // Breakdown bars
   document.getElementById('bars').innerHTML = [
-    {label:'关键词命中',val:s.keyword_hit_rate,color:'var(--ok)',unit:'%'},
-    {label:'向量降级',val:s.vector_fallback_rate,color:'var(--warn)',unit:'%'},
-    {label:'成功率',val:s.success_rate,color:'var(--ok)',unit:'%'},
-  ].map(b => {
-    const w = b.val||0;
-    return `<div class="bar-wrap"><span class="label">${b.label}</span><div class="bar-bg"><div class="bar-fill" style="width:${w}%;background:${b.color}"></div></div><span class="val">${w}${b.unit}</span></div>`;
-  }).join('');
+    {label:'关键词命中', val:summary.keyword_hit_rate, color:'#16885f', unit:'%'},
+    {label:'向量补充', val:summary.vector_fallback_rate, color:'#b7791f', unit:'%'},
+    {label:'执行成功', val:summary.success_rate, color:'#5b5ce2', unit:'%'},
+  ].map(item => `<div class="bar-wrap"><span class="label">${item.label}</span><div class="bar-bg"><div class="bar-fill" style="width:${Math.min(100, Number(item.val || 0))}%;background:${item.color}"></div></div><span class="val">${Number(item.val || 0)}${item.unit}</span></div>`).join('');
 
-  // Token breakdown
-  const tokMax = Math.max(s.avg_token_total||1, 100);
+  const tokenMax = Math.max(Number(summary.avg_token_total || 1), 100);
   document.getElementById('tokenBars').innerHTML = [
-    {label:'理解',val:s.avg_token_understand||0,color:'#a78bfa'},
-    {label:'生成',val:s.avg_token_generate||0,color:'#38bdf8'},
-    {label:'修正',val:s.avg_token_fix||0,color:'#f59e0b'},
-    {label:'回答',val:s.avg_token_answer||0,color:'#22c55e'},
-  ].map(b => {
-    const pct = Math.round((b.val||0)/tokMax*100);
-    return `<div class="bar-wrap"><span class="label">${b.label}</span><div class="bar-bg"><div class="bar-fill" style="width:${pct}%;background:${b.color}"></div></div><span class="val">${b.val||0} tok</span></div>`;
-  }).join('');
+    {label:'意图理解', val:summary.avg_token_understand, color:'#8066d8'},
+    {label:'SQL 生成', val:summary.avg_token_generate, color:'#5b5ce2'},
+    {label:'错误修正', val:summary.avg_token_fix, color:'#c98a2d'},
+    {label:'回答润色', val:summary.avg_token_answer, color:'#14998d'},
+  ].map(item => `<div class="bar-wrap"><span class="label">${item.label}</span><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(Number(item.val || 0) / tokenMax * 100)}%;background:${item.color}"></div></div><span class="val">${Number(item.val || 0)} tok</span></div>`).join('');
 
-  // Recent table
-  document.getElementById('recent').innerHTML = d.recent.map(r => {
-    const kw = r.keyword_hit ? '<span class="badge badge-hit">关键词</span>' : '<span class="badge badge-vec">向量</span>';
-    const ok = r.success ? '<span class="badge badge-ok">✓</span>' : '<span class="badge badge-err">✗</span>';
-    return `<tr id="recent">
-      <td>${(r.question||'').slice(0,50)}</td>
-      <td>${kw}</td>
-      <td>${ok}</td>
-      <td class="tok">${r.tokens.understand}+${r.tokens.generate}=${r.tokens.total}</td>
-      <td>${(r.total_ms||0).toFixed(0)}ms</td>
-    </tr>`;
-  }).join('');
+  const recent = data.recent || [];
+  document.getElementById('recent').innerHTML = recent.length ? recent.map(item => {
+    const retrieval = item.keyword_hit ? '<span class="badge badge-hit">关键词</span>' : '<span class="badge badge-vec">向量</span>';
+    const result = item.success ? '<span class="badge badge-ok">通过</span>' : '<span class="badge badge-err">失败</span>';
+    return `<tr><td title="${escapeHtml(item.question)}">${escapeHtml(String(item.question || '').slice(0, 60))}</td><td>${retrieval}</td><td>${result}</td><td class="tok">${Number(item.tokens?.understand || 0)} + ${Number(item.tokens?.generate || 0)} = ${Number(item.tokens?.total || 0)}</td><td>${Number(item.total_ms || 0).toFixed(0)}ms</td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="5">暂无查询记录，完成一次智能问数后会在这里展示。</td></tr>';
 
-  document.getElementById('totalQueries').textContent = s.total_queries;
-  document.getElementById('precAtK').textContent = s.avg_precision_at_k;
-  document.getElementById('recallGap').textContent = s.recall_gap_events;
+  document.getElementById('totalQueries').textContent = summary.total_queries || 0;
+  document.getElementById('precAtK').textContent = summary.avg_precision_at_k ?? '—';
+  document.getElementById('recallGap').textContent = summary.recall_gap_events || 0;
 }
 
 load();

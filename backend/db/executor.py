@@ -50,8 +50,13 @@ class SQLExecutor:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # 设置查询超时
-            conn.execute(f"PRAGMA query_timeout = {QUERY_TIMEOUT_SEC * 1000}")
+            # SQLite 没有可靠的 statement_timeout；用 VM progress handler 按截止时间中断。
+            deadline = time.monotonic() + QUERY_TIMEOUT_SEC
+            conn.set_progress_handler(
+                lambda: 1 if time.monotonic() >= deadline else 0,
+                1000,
+            )
+            conn.execute("PRAGMA query_only = ON")
 
             cursor.execute(sql, params or ())
             rows = cursor.fetchall()
@@ -90,12 +95,12 @@ class SQLExecutor:
 
             return result
 
-        except sqlite3.OperationalError as e:
-            return {
-                "success": False,
-                "error": f"SQL语法错误：{str(e)}。请检查表名、字段名是否正确。",
-                "data": None,
-            }
+        except sqlite3.OperationalError as error:
+            if "interrupted" in str(error).lower():
+                message = f"查询超过 {QUERY_TIMEOUT_SEC} 秒，已安全中断。请缩小时间范围或增加过滤条件。"
+            else:
+                message = f"SQL执行失败：{error}。请检查表名、字段名和查询条件。"
+            return {"success": False, "error": message, "data": None}
         except Exception as e:
             return {
                 "success": False,
@@ -104,6 +109,7 @@ class SQLExecutor:
             }
         finally:
             if conn:
+                conn.set_progress_handler(None, 0)
                 conn.close()
 
 

@@ -30,11 +30,12 @@ FAKE_RESULT = {
 def test_execute_sql_node_uses_llm_answer_when_enabled():
     """普通路径（无 stream_cb）且 NL_ANSWER_LLM 开启 → 用 LLM 口语化回答"""
     state = _mk_state()
-    with patch("agent.workflow.executor.execute", return_value=FAKE_RESULT):
-        with patch("agent.workflow.result_checker.check", side_effect=lambda r: r):
-            with patch("agent.workflow.sql_generator.answer_summary",
-                       new=AsyncMock(return_value="本月销售额是100元")) as m:
-                out = asyncio.run(workflow.execute_sql_node(state))
+    with patch("config.NL_ANSWER_LLM", True):
+        with patch("agent.workflow.executor.execute", return_value=FAKE_RESULT):
+            with patch("agent.workflow.result_checker.check", side_effect=lambda r: r):
+                with patch("agent.workflow.sql_generator.answer_summary",
+                           new=AsyncMock(return_value="本月销售额是100元")) as m:
+                    out = asyncio.run(workflow.execute_sql_node(state))
     assert out["nl_answer"] == "本月销售额是100元"
     m.assert_awaited_once_with("本月销售额是多少", state["sql"], FAKE_RESULT)
 
@@ -55,10 +56,11 @@ def test_execute_sql_node_falls_back_to_rule_when_disabled():
 def test_execute_sql_node_falls_back_when_llm_empty():
     """LLM 回答为空（失败/降级）→ 规则版回答兜底"""
     state = _mk_state()
-    with patch("agent.workflow.executor.execute", return_value=FAKE_RESULT):
-        with patch("agent.workflow.result_checker.check", side_effect=lambda r: r):
-            with patch("agent.workflow.sql_generator.answer_summary",
-                       new=AsyncMock(return_value="")) as m:
-                out = asyncio.run(workflow.execute_sql_node(state))
+    with patch("config.NL_ANSWER_LLM", True):
+        with patch("agent.workflow.executor.execute", return_value=FAKE_RESULT):
+            with patch("agent.workflow.result_checker.check", side_effect=lambda r: r):
+                with patch("agent.workflow.sql_generator.answer_summary",
+                           new=AsyncMock(return_value="")) as m:
+                    out = asyncio.run(workflow.execute_sql_node(state))
     assert out["nl_answer"]  # 降级规则版非空
     m.assert_awaited_once()

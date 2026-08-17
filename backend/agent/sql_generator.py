@@ -181,14 +181,31 @@ class SQLGenerator:
             parts.append(f"\n### 表: {table_name}")
             parts.append(table_info.get("doc", ""))
 
-        # 表关系速查
-        parts.append("\n## 表关系速查")
-        if "order_items" in all_tables and "orders" in all_tables and "products" in all_tables:
-            parts.append("- order_items.order_id → orders.order_id（订单明细→订单）")
-            parts.append("- order_items.product_id → products.product_id（订单明细→产品）")
-        if "orders" in all_tables and "customers" in all_tables:
-            parts.append("- orders.customer_id → customers.customer_id（订单→客户）")
+        parts.append("\n## 允许的表关系")
+        relationships = schema_context.get("relationships", [])
+        if relationships:
+            for relation in relationships:
+                parts.append(
+                    f"- {relation['from_table']}.{relation['from_column']} → "
+                    f"{relation['to_table']}.{relation['to_column']}"
+                )
+        else:
+            parts.append("- 未检索到可靠关系；不要猜测 JOIN 条件")
 
+        join_paths = schema_context.get("join_paths", [])
+        if join_paths:
+            parts.append("\n## 推荐 JOIN 路径")
+            for path in join_paths:
+                parts.append("- " + " → ".join(path))
+
+        metrics = schema_context.get("metrics", [])
+        if metrics:
+            parts.append("\n## 命中的指标口径")
+            for metric in metrics:
+                parts.append(
+                    f"- {metric['name']}({metric['key']}): {metric['formula']} "
+                    f"[version={metric['version']}]"
+                )
         parts.append("\n## 输出要求")
         parts.append("只输出JSON对象：{\"sql\": \"SQL语句\", \"explanation\": \"1-2句中文说明\"}，不要输出其他内容。")
 

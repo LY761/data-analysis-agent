@@ -10,8 +10,8 @@ sqlglot>=25.0
 pandas>=2.2.0
 openai>=1.55
 python-dotenv>=1.0.0
-websockets>=14.0
 pydantic>=2.10.0
+mcp>=2.0,<3
 
 # Optional: Production Infrastructure
 redis>=5.0.0           # Redis cache for hot query caching (50ms hit)

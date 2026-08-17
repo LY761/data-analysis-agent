@@ -8,6 +8,7 @@ Langfuse未配置时自动降级为本地日志，不抛异常。
 import time
 import json
 import logging
+import re
 import uuid
 from typing import Optional, Any
 from contextvars import ContextVar
@@ -16,26 +17,24 @@ logger = logging.getLogger(__name__)
 
 # Lazy init
 _langfuse_client: Optional[object] = None
-_langfuse_available: bool = False
+_langfuse_initialized: bool = False
 
 # Context variable for current trace_id (thread-safe)
 _current_trace_id: ContextVar[str] = ContextVar("trace_id", default="")
 
 
 def _get_langfuse():
-    """Lazy-init Langfuse client. Returns None if not configured."""
-    global _langfuse_client, _langfuse_available
+    """首次使用时初始化 Langfuse；未配置时稳定降级为本地日志。"""
+    global _langfuse_client, _langfuse_initialized
 
-    if _langfuse_client is not None:
+    if _langfuse_initialized:
         return _langfuse_client
-    if not _langfuse_available and _langfuse_client is None:
-        return None
+    _langfuse_initialized = True
 
     try:
-        from config import LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
+        from config import LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY
         if not LANGFUSE_PUBLIC_KEY or not LANGFUSE_SECRET_KEY:
-            logger.info("[Tracer] Langfuse keys not configured — tracing via local logs only.")
-            _langfuse_available = False
+            logger.info("[Tracer] Langfuse keys not configured; using local logs.")
             return None
 
         from langfuse import Langfuse
@@ -44,18 +43,12 @@ def _get_langfuse():
             secret_key=LANGFUSE_SECRET_KEY,
             host=LANGFUSE_HOST or "https://cloud.langfuse.com",
         )
-        _langfuse_available = True
-        logger.info(f"[Tracer] Langfuse connected: {LANGFUSE_HOST or 'cloud.langfuse.com'}")
-        return _langfuse_client
+        logger.info("[Tracer] Langfuse connected: %s", LANGFUSE_HOST)
     except ImportError:
-        logger.info("[Tracer] langfuse not installed — tracing via local logs only.")
-        _langfuse_available = False
-        return None
-    except Exception as e:
-        logger.warning(f"[Tracer] Langfuse init failed ({e}) — tracing via local logs only.")
-        _langfuse_available = False
-        return None
-
+        logger.info("[Tracer] langfuse not installed; using local logs.")
+    except Exception as error:
+        logger.warning("[Tracer] Langfuse init failed: %s", error)
+    return _langfuse_client
 
 class TraceContext:
     """A single NL2SQL query trace. Context-managed, auto-flushes."""
@@ -81,7 +74,7 @@ class TraceContext:
             except Exception as e:
                 logger.warning(f"[Tracer] Langfuse trace start failed: {e}")
 
-        logger.info(f"[Trace:{self.trace_id}] START — question='{self.question[:80]}'")
+        logger.info(f"[Trace:{self.trace_id}] START — question='{_redact_text(self.question)[:80]}'")
 
     def span(self, name: str, input_data: Any = None, output_data: Any = None,
              metadata: dict = None) -> dict:
@@ -140,26 +133,43 @@ class TraceContext:
         return False
 
 
+_SENSITIVE_KEYS = {"password", "token", "api_key", "authorization", "email", "phone", "mobile", "id_card", "bank_card"}
+
+
+def _redact_text(value: str) -> str:
+    value = re.sub(r"\b1\d{10}\b", "***PHONE***", value)
+    value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "***EMAIL***", value)
+    value = re.sub(r"\b(?:sk|ak)-[A-Za-z0-9_-]{8,}\b", "***TOKEN***", value)
+    return value
+
+
 def _safe_serialize(obj: Any, max_len: int = 500) -> Any:
-    """Safely serialize for tracing, truncating long strings."""
+    """序列化 Trace 数据并对凭证、手机号和邮箱做最小化脱敏。"""
     if obj is None:
         return None
-    if isinstance(obj, (str, int, float, bool)):
-        if isinstance(obj, str) and len(obj) > max_len:
-            return obj[:max_len] + f"...[truncated, total {len(obj)} chars]"
+    if isinstance(obj, str):
+        value = _redact_text(obj)
+        suffix = f"...[truncated, total {len(value)} chars]" if len(value) > max_len else ""
+        return value[:max_len] + suffix
+    if isinstance(obj, (int, float, bool)):
         return obj
     if isinstance(obj, dict):
-        return {k: _safe_serialize(v, max_len) for k, v in obj.items()}
+        serialized = {}
+        for key, value in obj.items():
+            if str(key).lower() in _SENSITIVE_KEYS:
+                serialized[key] = "***REDACTED***"
+            else:
+                serialized[key] = _safe_serialize(value, max_len)
+        return serialized
     if isinstance(obj, list):
+        items = [_safe_serialize(item, max_len) for item in obj[:10]]
         if len(obj) > 10:
-            return [_safe_serialize(item, max_len) for item in obj[:10]] + \
-                   [f"...[{len(obj) - 10} more items]"]
-        return [_safe_serialize(item, max_len) for item in obj]
+            items.append(f"...[{len(obj) - 10} more items]")
+        return items
     try:
-        return json.dumps(obj, ensure_ascii=False, default=str)[:max_len]
+        return _redact_text(json.dumps(obj, ensure_ascii=False, default=str))[:max_len]
     except Exception:
-        return str(type(obj).__name__)
-
+        return type(obj).__name__
 
 def get_current_trace_id() -> str:
     """Get the current trace ID for log correlation."""

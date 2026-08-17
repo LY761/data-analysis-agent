@@ -281,233 +281,370 @@ def get_vector_store(collection_name: str = "schema_embeddings") -> VectorStore:
 # ═══════════════════════════════════════════════════════════════════
 
 class SchemaRetriever:
-    """Retrieve relevant database schema by semantic search"""
+    """按置信度执行精确关键词快路径和关键词/向量混合召回。"""
+
+    RETRIEVAL_VERSION = "schema-hybrid-v1"
+    LOW_CONFIDENCE_THRESHOLD = 0.30
 
     def __init__(self):
-        self.model = None  # 懒加载：只在走向量检索时才加载BGE模型
-        # 集合名带上 embedding 模型标识：
-        # 换模型（如 large→small）时自动用全新的空集合，避免"维度不匹配"报错。
+        self.model = None
+        self.schema_catalog: dict[str, dict] = {}
         model_tag = re.sub(r"[^A-Za-z0-9]+", "_", EMBEDDING_MODEL).strip("_")
         self.collection_name = f"schema_embeddings_{model_tag}"
-        # 数据层：按 VECTOR_STORE 配置选择 ChromaDB 或 Milvus
         self.store = get_vector_store(self.collection_name)
-        # 兼容旧引用（main.py / reindex_schema.py 用 schema_retriever.collection.count()）
         self.collection = self.store
 
+    def set_schema_catalog(self, schema_list: list[dict]) -> None:
+        self.schema_catalog = {item["table"]: item for item in schema_list}
+
     def _ensure_model(self):
-        """懒加载BGE模型（仅在需要向量检索时）"""
         if self.model is None:
-            print(f"[SchemaRetriever] Loading embedding model: {EMBEDDING_MODEL} ...")
+            logger.info("[SchemaRetriever] loading embedding model: %s", EMBEDDING_MODEL)
             self.model = SentenceTransformer(EMBEDDING_MODEL)
-            print(f"[SchemaRetriever] Model loaded. dim={self.model.get_embedding_dimension()}")
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for texts using local model"""
+        self._ensure_model()
         embeddings = self.model.encode(texts, normalize_embeddings=True)
         return embeddings.tolist()
 
     def index_schemas(self, schema_list: list[dict], force: bool = False):
-        """将表/列Schema索引到向量库。force=True时强制重建索引。"""
+        self.set_schema_catalog(schema_list)
         if self.store.count() > 0:
             if force:
-                # 彻底重建：删除整个集合再新建。
-                # 注意：只删文档不会重置维度——集合的 embedding 维度在创建时固化，
-                # 换过 embedding 模型（如 large→small）后必须重建集合才能匹配新维度。
                 self.store.recreate()
-                print(f"[SchemaRetriever] 强制重建索引（已重建集合 {self.collection_name}）")
+                logger.info("[SchemaRetriever] rebuilt collection %s", self.collection_name)
             else:
-                print(f"[SchemaRetriever] Already indexed {self.store.count()} documents, skipping...")
+                logger.info("[SchemaRetriever] index exists; skip rebuild")
                 return
 
         documents = []
         metadatas = []
         ids = []
-
         for table_info in schema_list:
-            # Index full table description
-            doc_id = f"table:{table_info['table']}"
-            doc_text = f"表名: {table_info['table']}\n说明: {table_info['description']}\nDDL: {table_info['ddl']}"
-            documents.append(doc_text)
-            metadatas.append({"type": "table", "table_name": table_info["table"]})
-            ids.append(doc_id)
+            table_name = table_info["table"]
+            documents.append(
+                f"表名: {table_name}\n说明: {table_info.get('description', '')}\n"
+                f"DDL: {table_info.get('ddl', '')}"
+            )
+            metadatas.append({"type": "table", "table_name": table_name})
+            ids.append(f"table:{table_name}")
 
-            # Index each column
-            for col in table_info.get("columns", []):
-                col_id = f"col:{table_info['table']}.{col['name']}"
-                col_text = f"表名: {table_info['table']}\n字段名: {col['name']}\n类型: {col['type']}\n说明: {col['comment']}"
-                documents.append(col_text)
+            for column in table_info.get("columns", []):
+                documents.append(
+                    f"表名: {table_name}\n字段名: {column['name']}\n"
+                    f"类型: {column.get('type', '')}\n说明: {column.get('comment', '')}"
+                )
                 metadatas.append({
                     "type": "column",
-                    "table_name": table_info["table"],
-                    "column_name": col["name"],
+                    "table_name": table_name,
+                    "column_name": column["name"],
                 })
-                ids.append(col_id)
+                ids.append(f"col:{table_name}.{column['name']}")
 
-            # Index sample queries
-            for i, query in enumerate(table_info.get("sample_queries", [])):
-                q_id = f"query:{table_info['table']}.{i}"
-                q_text = f"表名: {table_info['table']}\n示例查询: {query}"
-                documents.append(q_text)
-                metadatas.append({"type": "sample_query", "table_name": table_info["table"]})
-                ids.append(q_id)
+            for index, query in enumerate(table_info.get("sample_queries", [])):
+                documents.append(f"表名: {table_name}\n示例查询: {query}")
+                metadatas.append({"type": "sample_query", "table_name": table_name})
+                ids.append(f"query:{table_name}.{index}")
 
-        # Batch embed and insert（模型是懒加载，这里必须确保已加载）
-        self._ensure_model()
-        embeddings = self._embed(documents)
+        if not documents:
+            return
         self.store.add(
-            embeddings=embeddings,
+            embeddings=self._embed(documents),
             documents=documents,
             metadatas=metadatas,
             ids=ids,
         )
-        print(f"[SchemaRetriever] Indexed {len(documents)} schema documents")
+        logger.info("[SchemaRetriever] indexed %s schema documents", len(documents))
 
-    def retrieve(self, question: str, top_k_tables: int = 3, top_k_columns: int = 5) -> dict:
-        """
-        Schema检索 — 先关键词（1ms）→ 失败再混合检索（向量兜底）
+    def retrieve(self, question: str, top_k_tables: int = 3, top_k_columns: int = 8) -> dict:
+        """精确命中直接返回；其余融合关键词和向量结果；向量失败时关键词兜底。"""
+        keyword_result = self._fast_keyword_retrieve(question, top_k_tables * 2, top_k_columns * 2)
+        if self._is_exact_fast_path(question, keyword_result):
+            return self._enrich_result(
+                question,
+                keyword_result,
+                strategy="exact_keyword",
+                vector_available=False,
+            )
 
-        大部分查询用关键词就能命中（"销售额"→orders表），毫秒级。
-        关键词检索无结果时（如同义词"营收"未命中），走向量兜底。
-        """
-        # 第一步：关键词快速检索
-        result = self._fast_keyword_retrieve(question, top_k_tables, top_k_columns)
-
-        # 关键词命中 → 直接返回（99%的场景）
-        if result["tables"]:
-            return result
-
-        # 关键词无结果 → 向量混合检索兜底（如同义词"营收"="销售额"）
-        logger.info(f"[Schema] 关键词无结果，降级到向量检索: '{question[:30]}...'")
+        vector_available = True
         try:
-            return self._hybrid_retrieve(question, top_k_tables, top_k_columns)
-        except Exception as e:
-            # 兜底再兜底：向量检索异常（如embedding维度与集合不一致）不致命，
-            # 降级返回空，由上层给出"未找到相关表"的友好提示，而不是500。
-            logger.warning(f"[Schema] 向量检索失败，降级返回空: {e}")
-            return {"tables": [], "columns": []}
+            vector_result = self._vector_retrieve(question, top_k_tables * 2, top_k_columns * 2)
+        except Exception as error:
+            logger.warning("[Schema] vector retrieval unavailable, keyword fallback: %s", error)
+            vector_available = False
+            vector_result = {"tables": [], "columns": []}
+
+        merged = self._fuse_results(keyword_result, vector_result, top_k_tables, top_k_columns)
+        strategy = "hybrid" if vector_available else "keyword_fallback"
+        return self._enrich_result(question, merged, strategy, vector_available)
 
     def _fast_keyword_retrieve(self, question: str, top_k_tables: int, top_k_columns: int) -> dict:
-        """
-        快速关键词检索 — 不走向量，直接拿所有文档做关键词匹配
-        适用场景: 表少（≤50个文档），向量检索的启动开销比匹配本身还大
-        """
-        import time
-        t0 = time.time()
-        all_data = self.store.get_all()  # 一次性拿所有文档
-
-        # 对每个文档做关键词打分
+        all_data = self.store.get_all()
         tokens = self._tokenize(question)
         scored = []
-        for i, (doc, meta) in enumerate(zip(all_data["documents"], all_data["metadatas"])):
-            if not doc:
+        for document, metadata in zip(all_data.get("documents", []), all_data.get("metadatas", [])):
+            if not document or not metadata:
                 continue
-            doc_lower = doc.lower()
-            kw_hits = sum(1 for t in tokens if t in doc_lower)
-            if kw_hits > 0:
-                score = kw_hits / max(len(tokens), 1)
-                scored.append((score, meta, doc))
+            document_lower = document.lower()
+            hits = sum(1 for token in tokens if token in document_lower)
+            if hits:
+                score = hits / max(len(tokens), 1)
+                scored.append((score, metadata, document))
+        return self._collect_ranked(scored, top_k_tables, top_k_columns)
 
-        # 按分数排序
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        seen_tables = set()
-        seen_columns = set()
-        relevant_tables = []
-        relevant_columns = []
-
-        for score, meta, doc in scored:
-            if meta["type"] == "table":
-                if meta["table_name"] not in seen_tables:
-                    seen_tables.add(meta["table_name"])
-                    relevant_tables.append({"table": meta["table_name"], "doc": doc, "score": round(score, 3)})
-            elif meta["type"] == "column":
-                col_key = f"{meta['table_name']}.{meta['column_name']}"
-                if col_key not in seen_columns:
-                    seen_columns.add(col_key)
-                    relevant_columns.append({"table": meta["table_name"], "column": meta["column_name"], "doc": doc, "score": round(score, 3)})
-
-        elapsed = (time.time() - t0) * 1000
-        logger.debug(f"[Schema] 快速关键词检索: {len(scored)}个匹配, {elapsed:.0f}ms")
-
-        return {
-            "tables": relevant_tables[:top_k_tables],
-            "columns": relevant_columns[:top_k_columns],
-        }
-
-    def _hybrid_retrieve(self, question: str, top_k_tables: int, top_k_columns: int) -> dict:
-        """向量+关键词混合检索（仅关键词失败时调用）"""
-        self._ensure_model()  # 懒加载BGE模型
+    def _vector_retrieve(self, question: str, top_k_tables: int, top_k_columns: int) -> dict:
         query_embedding = self._embed([question])[0]
-        n_candidates = max(top_k_tables * 5 + top_k_columns * 3, 30)
-        results = self.store.query(query_embedding, n_results=n_candidates)
-        kw_scores = self._compute_keyword_scores(question, results)
-
-        seen_tables = set()
-        seen_columns = set()
-        relevant_tables = []
-        relevant_columns = []
-
-        for i, (doc, meta, distance) in enumerate(zip(
-            results["documents"][0], results["metadatas"][0], results["distances"][0],
-        )):
-            vector_sim = 1.0 / (1.0 + distance)
-            kw_score = kw_scores.get(i, 0)
-            hybrid_score = 0.7 * vector_sim + 0.3 * kw_score
-
-            if meta["type"] == "table":
-                if meta["table_name"] not in seen_tables:
-                    seen_tables.add(meta["table_name"])
-                    relevant_tables.append({"table": meta["table_name"], "doc": doc, "score": round(hybrid_score, 3)})
-            elif meta["type"] == "column":
-                col_key = f"{meta['table_name']}.{meta['column_name']}"
-                if col_key not in seen_columns:
-                    seen_columns.add(col_key)
-                    relevant_columns.append({"table": meta["table_name"], "column": meta["column_name"], "doc": doc, "score": round(hybrid_score, 3)})
-
-        relevant_tables.sort(key=lambda x: x["score"], reverse=True)
-        relevant_columns.sort(key=lambda x: x["score"], reverse=True)
-        return {
-            "tables": relevant_tables[:top_k_tables],
-            "columns": relevant_columns[:top_k_columns],
-        }
+        candidate_count = max(top_k_tables * 5 + top_k_columns * 3, 30)
+        results = self.store.query(query_embedding, n_results=candidate_count)
+        scored = []
+        documents = (results.get("documents") or [[]])[0]
+        metadatas = (results.get("metadatas") or [[]])[0]
+        distances = (results.get("distances") or [[]])[0]
+        for document, metadata, distance in zip(documents, metadatas, distances):
+            similarity = max(0.0, min(1.0, 1.0 - float(distance)))
+            scored.append((similarity, metadata, document))
+        return self._collect_ranked(scored, top_k_tables, top_k_columns)
 
     @staticmethod
-    def _tokenize(text: str) -> set:
-        """中文分词：bigram + 单字"""
-        tokens = set()
-        for i in range(len(text) - 1):
-            tokens.add(text[i:i+2])
-        for ch in text:
-            if '一' <= ch <= '鿿':
-                tokens.add(ch)
-        return tokens
+    def _collect_ranked(scored, top_k_tables: int, top_k_columns: int) -> dict:
+        scored.sort(key=lambda item: item[0], reverse=True)
+        table_scores: dict[str, dict] = {}
+        column_scores: dict[str, dict] = {}
+        for score, metadata, document in scored:
+            table_name = metadata.get("table_name", "")
+            if not table_name:
+                continue
+            if metadata.get("type") in {"table", "sample_query"}:
+                current = table_scores.get(table_name)
+                if not current or score > current["score"]:
+                    table_scores[table_name] = {
+                        "table": table_name,
+                        "doc": document,
+                        "score": round(float(score), 4),
+                    }
+            elif metadata.get("type") == "column":
+                column_name = metadata.get("column_name", "")
+                key = f"{table_name}.{column_name}"
+                current = column_scores.get(key)
+                if not current or score > current["score"]:
+                    column_scores[key] = {
+                        "table": table_name,
+                        "column": column_name,
+                        "doc": document,
+                        "score": round(float(score), 4),
+                    }
+        tables = sorted(table_scores.values(), key=lambda item: item["score"], reverse=True)
+        columns = sorted(column_scores.values(), key=lambda item: item["score"], reverse=True)
+        return {"tables": tables[:top_k_tables], "columns": columns[:top_k_columns]}
+
+    @staticmethod
+    def _fuse_results(keyword_result: dict, vector_result: dict, top_k_tables: int, top_k_columns: int) -> dict:
+        def fuse(items_by_source: list[tuple[list[dict], float]], key_builder) -> list[dict]:
+            merged: dict[str, dict] = {}
+            for items, weight in items_by_source:
+                for rank, item in enumerate(items, start=1):
+                    key = key_builder(item)
+                    entry = merged.setdefault(key, {**item, "score": 0.0, "sources": []})
+                    entry["score"] += weight * float(item.get("score", 0))
+                    entry["sources"].append("keyword" if weight == 0.45 else "vector")
+            for entry in merged.values():
+                if len(set(entry["sources"])) > 1:
+                    entry["score"] += 0.05
+                entry["score"] = round(min(entry["score"], 1.0), 4)
+                entry["sources"] = sorted(set(entry["sources"]))
+            return sorted(merged.values(), key=lambda item: item["score"], reverse=True)
+
+        tables = fuse(
+            [(keyword_result.get("tables", []), 0.45), (vector_result.get("tables", []), 0.55)],
+            lambda item: item["table"],
+        )
+        columns = fuse(
+            [(keyword_result.get("columns", []), 0.45), (vector_result.get("columns", []), 0.55)],
+            lambda item: f"{item['table']}.{item['column']}",
+        )
+        return {"tables": tables[:top_k_tables], "columns": columns[:top_k_columns]}
+
+    def _is_exact_fast_path(self, question: str, result: dict) -> bool:
+        tables = result.get("tables", [])
+        if not tables:
+            return False
+        normalized = question.lower()
+        explicit_identifier = any(
+            table_name.lower() in normalized
+            for table_name in self.schema_catalog
+        )
+        top_score = tables[0].get("score", 0)
+        second_score = tables[1].get("score", 0) if len(tables) > 1 else 0
+        return explicit_identifier or (top_score >= 0.7 and top_score - second_score >= 0.2)
+
+    def _enrich_result(self, question: str, result: dict, strategy: str, vector_available: bool) -> dict:
+        selected_tables = [item["table"] for item in result.get("tables", [])]
+        relationships = self._relationships()
+        selected_tables, join_paths = self._expand_join_paths(selected_tables, relationships)
+
+        existing = {item["table"] for item in result.get("tables", [])}
+        tables = list(result.get("tables", []))
+        for table_name in selected_tables:
+            if table_name not in existing and table_name in self.schema_catalog:
+                info = self.schema_catalog[table_name]
+                tables.append({
+                    "table": table_name,
+                    "doc": info.get("description", ""),
+                    "score": 0.15,
+                    "sources": ["join_graph"],
+                })
+
+        selected_set = set(selected_tables)
+        selected_relationships = [
+            relation
+            for relation in relationships
+            if relation["from_table"] in selected_set and relation["to_table"] in selected_set
+        ]
+        columns = list(result.get("columns", []))
+        column_keys = {f"{item['table']}.{item['column']}" for item in columns}
+        for relation in selected_relationships:
+            for table_name, column_name in (
+                (relation["from_table"], relation["from_column"]),
+                (relation["to_table"], relation["to_column"]),
+            ):
+                key = f"{table_name}.{column_name}"
+                if key not in column_keys:
+                    columns.append({
+                        "table": table_name,
+                        "column": column_name,
+                        "doc": "关系字段",
+                        "score": 0.15,
+                        "sources": ["join_graph"],
+                    })
+                    column_keys.add(key)
+
+        metrics = self._matched_metrics(question)
+        dimensions = self._dimensions(selected_tables)
+        samples = [
+            {"table": table_name, "query": query}
+            for table_name in selected_tables
+            for query in self.schema_catalog.get(table_name, {}).get("sample_queries", [])[:2]
+        ]
+        confidence = round(max((item.get("score", 0) for item in tables), default=0), 4)
+        return {
+            "tables": tables,
+            "columns": columns,
+            "relationships": selected_relationships,
+            "metrics": metrics,
+            "dimensions": dimensions,
+            "join_paths": join_paths,
+            "sample_queries": samples,
+            "evidence": [
+                {"table": item["table"], "score": item.get("score", 0), "sources": item.get("sources", [strategy])}
+                for item in tables
+            ],
+            "retrieval": {
+                "strategy": strategy,
+                "confidence": confidence,
+                "low_confidence": confidence < self.LOW_CONFIDENCE_THRESHOLD,
+                "vector_available": vector_available,
+                "version": self.RETRIEVAL_VERSION,
+            },
+        }
+
+    def _relationships(self) -> list[dict]:
+        relationships = []
+        pattern = re.compile(
+            r"FOREIGN\s+KEY\s*\((\w+)\)\s+REFERENCES\s+(\w+)\s*\((\w+)\)",
+            re.IGNORECASE,
+        )
+        for table_name, table_info in self.schema_catalog.items():
+            for from_column, to_table, to_column in pattern.findall(table_info.get("ddl", "")):
+                relationships.append({
+                    "from_table": table_name,
+                    "from_column": from_column,
+                    "to_table": to_table,
+                    "to_column": to_column,
+                    "join_type": "many_to_one",
+                })
+        return relationships
+
+    @staticmethod
+    def _expand_join_paths(selected_tables: list[str], relationships: list[dict]) -> tuple[list[str], list[list[str]]]:
+        selected = list(dict.fromkeys(selected_tables))
+        selected_set = set(selected)
+        adjacency: dict[str, set[str]] = {}
+        for relation in relationships:
+            left, right = relation["from_table"], relation["to_table"]
+            adjacency.setdefault(left, set()).add(right)
+            adjacency.setdefault(right, set()).add(left)
+
+        join_paths = []
+        original = list(selected)
+        for index, source in enumerate(original):
+            for target in original[index + 1:]:
+                if target in adjacency.get(source, set()):
+                    join_paths.append([source, target])
+                    continue
+                bridges = adjacency.get(source, set()) & adjacency.get(target, set())
+                if bridges:
+                    bridge = sorted(bridges)[0]
+                    join_paths.append([source, bridge, target])
+                    if bridge not in selected_set:
+                        selected.append(bridge)
+                        selected_set.add(bridge)
+        return selected, join_paths
+
+    def _matched_metrics(self, question: str) -> list[dict]:
+        from domain.metric_registry import metric_registry
+
+        normalized = question.lower()
+        aliases = {
+            "销售额": "gmv",
+            "营收": "gmv",
+            "成交额": "gmv",
+            "客单价": "average_order_value",
+            "转化率": "conversion_rate_pct",
+            "退款率": "refund_rate_pct",
+            "毛利率": "gross_margin_pct",
+            "动销率": "sell_through_rate_pct",
+        }
+        matched_keys = {key for alias, key in aliases.items() if alias in normalized}
+        for definition in metric_registry.list():
+            if definition.name.lower() in normalized or definition.metric_key.lower() in normalized:
+                matched_keys.add(definition.metric_key)
+        return [metric_registry.get(key).to_public_dict() for key in sorted(matched_keys)]
+
+    def _dimensions(self, selected_tables: list[str]) -> list[dict]:
+        dimensions = []
+        for table_name in selected_tables:
+            for column in self.schema_catalog.get(table_name, {}).get("columns", []):
+                column_type = column.get("type", "").upper()
+                if any(marker in column_type for marker in ("TEXT", "DATE", "TIME")):
+                    dimensions.append({
+                        "table": table_name,
+                        "column": column["name"],
+                        "type": column.get("type", ""),
+                        "description": column.get("comment", ""),
+                    })
+        return dimensions
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        normalized = text.lower().strip()
+        tokens = set(re.findall(r"[a-z0-9_]+", normalized))
+        chinese = "".join(character for character in normalized if "一" <= character <= "鿿")
+        for size in (2, 3):
+            for index in range(max(0, len(chinese) - size + 1)):
+                tokens.add(chinese[index:index + size])
+        if len(chinese) == 1:
+            tokens.add(chinese)
+        return {token for token in tokens if token}
 
     @staticmethod
     def _compute_keyword_scores(question: str, results: dict) -> dict:
-        """
-        计算关键词匹配分数。
-
-        使用中文bigram切词（每连续2字为一个词）+ 单字兜底，
-        统计query中的词在文档中出现的比例。
-        返回: {结果序号: 关键词得分(0~1)}
-        """
-        # 中文bigram + 单字
-        tokens = set()
-        for i in range(len(question) - 1):
-            tokens.add(question[i:i+2])  # bigram: "本月" "月销" "销售"...
-        for ch in question:
-            if '一' <= ch <= '鿿':  # 只取中文字
-                tokens.add(ch)
-
-        if not tokens:
-            return {}
-
+        tokens = SchemaRetriever._tokenize(question)
         scores = {}
-        for i, doc in enumerate(results["documents"][0]):
-            doc_lower = doc.lower()
-            hits = sum(1 for t in tokens if t in doc_lower)
-            scores[i] = min(hits / max(len(tokens), 1), 1.0)
-
+        for index, document in enumerate((results.get("documents") or [[]])[0]):
+            document_lower = (document or "").lower()
+            hits = sum(1 for token in tokens if token in document_lower)
+            scores[index] = hits / max(len(tokens), 1)
         return scores
 
 

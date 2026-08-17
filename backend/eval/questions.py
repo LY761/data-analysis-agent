@@ -6,7 +6,7 @@ Agent 评测集 — 100 条问题（含极值/边界测试）
   question       用户问题
   category       类别: basic聚合 / ranking排名 / time时间 / join多表 /
                  filter筛选 / extreme极值 / misc杂项 / intent意图路由
-  expect_mode    期望路由: sql_query / chat / knowledge / competitor / market_intelligence / clarify
+  expect_mode    期望路由: sql_query / chat / quick_card / clarify
   expect_tables  期望涉及的数据库表（用于检索召回率）
   expect_data    yes=期望有数据 / no=期望空 / any=不限
   expect_sql_frag 期望SQL里的关键片段（用于SQL逻辑命中）
@@ -199,27 +199,27 @@ EVAL_QUESTIONS = [
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "身份"},
     {"id": 77, "question": "hallo", "category": "intent", "expect_mode": "chat",
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "外文问候"},
-    {"id": 78, "question": "什么是RFM分析", "category": "intent", "expect_mode": "knowledge",
+    {"id": 78, "question": "什么是RFM分析", "category": "intent", "expect_mode": "chat",
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "知识问题"},
-    {"id": 79, "question": "什么是客单价", "category": "intent", "expect_mode": "knowledge",
+    {"id": 79, "question": "什么是客单价", "category": "intent", "expect_mode": "chat",
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "指标概念"},
-    {"id": 80, "question": "解释一下环比和同比", "category": "intent", "expect_mode": "knowledge",
+    {"id": 80, "question": "解释一下环比和同比", "category": "intent", "expect_mode": "chat",
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "概念解释"},
-    {"id": 81, "question": "怎么做用户分群", "category": "intent", "expect_mode": "knowledge",
+    {"id": 81, "question": "怎么做用户分群", "category": "intent", "expect_mode": "chat",
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "方法论"},
     {"id": 82, "question": "帮我分析一下", "category": "intent", "expect_mode": "clarify",
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "需要澄清"},
-    {"id": 83, "question": "分析一下绿联", "category": "intent", "expect_mode": "competitor",
-     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "竞品"},
-    {"id": 84, "question": "安克和我们比怎么样", "category": "intent", "expect_mode": "competitor",
-     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "竞品对比"},
-    {"id": 85, "question": "分析一下蓝牙耳机的选品机会", "category": "intent", "expect_mode": "market_intelligence",
-     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "选品"},
-    {"id": 86, "question": "筋膜枪能不能做", "category": "intent", "expect_mode": "market_intelligence",
-     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "选品评估"},
-    {"id": 87, "question": "研究一下 Soundcore P40i", "category": "intent", "expect_mode": "market_intelligence",
-     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "商品研究"},
-    {"id": 88, "question": "什么是选品", "category": "intent", "expect_mode": "knowledge",
+    {"id": 83, "question": "分析一下绿联", "category": "intent", "expect_mode": "chat",
+     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "能力边界"},
+    {"id": 84, "question": "安克和我们比怎么样", "category": "intent", "expect_mode": "chat",
+     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "能力边界"},
+    {"id": 85, "question": "分析一下蓝牙耳机的选品机会", "category": "intent", "expect_mode": "chat",
+     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "能力边界"},
+    {"id": 86, "question": "筋膜枪能不能做", "category": "intent", "expect_mode": "chat",
+     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "能力边界"},
+    {"id": 87, "question": "研究一下 Soundcore P40i", "category": "intent", "expect_mode": "chat",
+     "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "能力边界"},
+    {"id": 88, "question": "什么是选品", "category": "intent", "expect_mode": "chat",
      "expect_tables": [], "expect_data": "any", "expect_sql_frag": "", "note": "知识优先于市场"},
 
     # ═══════════ H. 复杂/混合 ═══════════
