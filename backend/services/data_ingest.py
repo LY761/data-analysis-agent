@@ -12,8 +12,6 @@ import re
 import sqlite3
 from typing import Optional
 
-from config import DEMO_DB_PATH
-
 logger = logging.getLogger(__name__)
 
 # 系统内部表（上传建表时跳过，不污染用户数据）
@@ -163,6 +161,12 @@ def inspect_file(filename: str, content: bytes, entity_type: str) -> dict:
 
 def ingest_file(filename: str, content: bytes) -> dict:
     """解析并入库文件。返回 {table, columns, row_count, error}。"""
+    from db.executor import executor
+
+    if executor.backend != "sqlite":
+        return {"error": "文件自动建表当前仅支持 SQLite 数据源，请切换到 SQLite 后重试。"}
+
+    active_db_path = executor.sqlite_path
     parsed = parse_file(filename, content)
     if parsed.get("error"):
         return parsed
@@ -185,7 +189,7 @@ def ingest_file(filename: str, content: bytes) -> dict:
         safe_headers.append(ch)
 
     try:
-        conn = sqlite3.connect(DEMO_DB_PATH)
+        conn = sqlite3.connect(active_db_path)
         col_defs = ", ".join(f'"{ch}" {ct}' for ch, ct in zip(safe_headers, col_types))
         conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs})')
         placeholders = ", ".join(["?"] * len(safe_headers))
@@ -207,7 +211,7 @@ def ingest_file(filename: str, content: bytes) -> dict:
     try:
         from db.init_db import build_full_sqlite_schemas
         from agent.schema_retriever import schema_retriever
-        schemas = build_full_sqlite_schemas()
+        schemas = build_full_sqlite_schemas(active_db_path)
         schema_retriever.index_schemas(schemas, force=True)
     except Exception as e:
         logger.warning(f"[DataIngest] Schema 索引重建失败: {e}")

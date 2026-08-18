@@ -223,20 +223,23 @@ CREATE TABLE product_reviews (
     ]
 
 
-def build_full_sqlite_schemas() -> list:
+def build_full_sqlite_schemas(db_path: str = "") -> list:
     """硬编码演示表描述 + sqlite_master 动态发现的上传/接入表，合并成完整 Schema。
     数据接入（上传 CSV/Excel 建表）后调用，让 NL2SQL 立刻能问新表。"""
     import logging
     logger = logging.getLogger(__name__)
-    base = get_schema_descriptions("sqlite")
-    known = {t["table"] for t in base}
+    active_db_path = db_path or DEMO_DB_PATH
+    base = get_schema_descriptions("sqlite", active_db_path)
     try:
-        conn = sqlite3.connect(DEMO_DB_PATH)
+        conn = sqlite3.connect(active_db_path)
         tables = [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'sqlite_%' "
             "AND name NOT IN ('query_cache','conversation_history','retrieval_log')"
         ).fetchall()]
+        table_names = set(tables)
+        base = [schema for schema in base if schema["table"] in table_names]
+        known = {schema["table"] for schema in base}
         for t in tables:
             if t in known:
                 continue

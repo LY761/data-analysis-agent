@@ -9,7 +9,6 @@ import time
 import sqlite3
 import sqlglot
 from sqlglot.errors import ErrorLevel
-from config import DEMO_DB_PATH
 
 
 class SQLValidator:
@@ -18,6 +17,7 @@ class SQLValidator:
     # 真实Schema缓存（表→字段集合），短TTL，DB切换后最多30s内更新
     _schema_cache: dict = {}
     _schema_cache_ts: float = 0
+    _schema_cache_db_path: str = ""
 
     # 危险操作和注入特征正则库
     DANGEROUS_PATTERNS = [
@@ -147,11 +147,21 @@ class SQLValidator:
 
     def _get_db_schema(self, max_age: int = 30) -> dict:
         """读取真实数据库Schema（表→字段名集合），短TTL缓存。异常时返回空dict（本闸门自动放行）。"""
+        from db.executor import executor
+
+        if executor.backend != "sqlite":
+            return {}
+
+        active_db_path = executor.sqlite_path
         now = time.time()
-        if self._schema_cache and now - self._schema_cache_ts < max_age:
+        if (
+            self._schema_cache
+            and self._schema_cache_db_path == active_db_path
+            and now - self._schema_cache_ts < max_age
+        ):
             return self._schema_cache
         try:
-            conn = sqlite3.connect(DEMO_DB_PATH)
+            conn = sqlite3.connect(active_db_path)
             schema = {}
             for (name,) in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name!='sqlite_sequence'"
@@ -161,6 +171,7 @@ class SQLValidator:
             conn.close()
             self._schema_cache = schema
             self._schema_cache_ts = now
+            self._schema_cache_db_path = active_db_path
             return schema
         except Exception:
             return {}

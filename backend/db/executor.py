@@ -132,6 +132,11 @@ class ExecutorProxy:
     def backend(self) -> str:
         return self._backend
 
+    @property
+    def sqlite_path(self) -> str:
+        """返回当前 SQLite 业务库路径，供接入和 Schema 组件复用。"""
+        return self._sqlite_executor.db_path
+
     def set_backend(self, db_type: str, path_or_url: str = None):
         """切换执行后端：sqlite（可带新文件路径）或 mysql（可带连接URL）"""
         db_type = (db_type or "").lower()

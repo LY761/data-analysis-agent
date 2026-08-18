@@ -84,6 +84,34 @@ def test_ingest_file_end_to_end():
         _drop_tables(table)
 
 
+def test_ingest_uses_current_sqlite_database(tmp_path):
+    """切换业务库后，上传、查询和 Schema 必须使用同一数据库。"""
+    from db.executor import executor
+
+    original_path = executor.sqlite_path
+    switched_path = str(tmp_path / "switched.db")
+    executor.set_backend("sqlite", switched_path)
+    try:
+        result = ingest_file("switched_products.csv", CSV_UTF8)
+        assert result["error"] is None
+
+        conn = sqlite3.connect(switched_path)
+        count = conn.execute(
+            'SELECT COUNT(*) FROM "data_switched_products"'
+        ).fetchone()[0]
+        conn.close()
+        assert count == 2
+
+        query = executor.execute('SELECT COUNT(*) AS total FROM "data_switched_products"')
+        assert query["success"] is True
+        assert query["data"][0]["total"] == 2
+
+        schemas = build_full_sqlite_schemas(switched_path)
+        assert {schema["table"] for schema in schemas} == {"data_switched_products"}
+    finally:
+        executor.set_backend("sqlite", original_path)
+
+
 def test_ingest_file_invalid():
     assert ingest_file("x.txt", b"abc")["error"]
     assert ingest_file("x.csv", b"")["error"] or ingest_file("x.csv", b"")["row_count"] == 0

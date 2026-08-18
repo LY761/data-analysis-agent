@@ -85,9 +85,7 @@ def switch_database(key: str) -> dict:
 
     # 更新执行器后端 — 关键：让查询真正走到对应数据库
     from db.executor import executor
-    import config
     if conn["db_type"] == "sqlite":
-        config.DEMO_DB_PATH = conn["path_or_url"]
         executor.set_backend("sqlite", conn["path_or_url"])
     elif conn["db_type"] == "mysql":
         executor.set_backend("mysql", conn["path_or_url"])
