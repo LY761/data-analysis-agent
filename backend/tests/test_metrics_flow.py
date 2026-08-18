@@ -12,11 +12,17 @@ client = TestClient(main.app)
 
 def _clear_metric_logs():
     conn = sqlite3.connect(DEMO_DB_PATH)
-    conn.execute("DELETE FROM retrieval_log")
-    # 缓存命中路径不创建 span、不落库 —— 测试必须清缓存避免污染
-    conn.execute("DELETE FROM query_cache")
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("DELETE FROM retrieval_log")
+        # 全新数据库可能尚未创建 query_cache；存在时才清理。
+        cache_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='query_cache'"
+        ).fetchone()
+        if cache_exists:
+            conn.execute("DELETE FROM query_cache")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def test_flush_idempotent():
