@@ -193,7 +193,8 @@ def ingest_file(filename: str, content: bytes) -> dict:
         col_defs = ", ".join(f'"{ch}" {ct}' for ch, ct in zip(safe_headers, col_types))
         conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs})')
         placeholders = ", ".join(["?"] * len(safe_headers))
-        sql = f'INSERT INTO "{table}" ({", ".join(f"\"{ch}\"" for ch in safe_headers)}) VALUES ({placeholders})'
+        quoted_columns = ", ".join(f'"{column}"' for column in safe_headers)
+        sql = f'INSERT INTO "{table}" ({quoted_columns}) VALUES ({placeholders})'
         params = [
             tuple(_to_insert_value(r[i] if i < len(r) else None, col_types[i])
                   for i in range(len(safe_headers)))
