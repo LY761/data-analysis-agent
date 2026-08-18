@@ -9,6 +9,7 @@
 - 支持 Web、REST 与 MCP 接入。
 - 后端自动化测试 108/108 通过。
 - 动态切换 SQLite 数据源后，文件摄取、SQL 查询、Schema 构建与 SQL 标识符校验共享同一运行时数据源。
+- Schema 检索支持 SentenceTransformer 与确定性 Hashing 双后端，CI 无需下载外部模型也能复现 108 项测试。
 
 ## 可复现命令
 

@@ -35,4 +35,6 @@ jobs:
       - name: Run tests
         env:
           LLM_PROVIDER: mock
+          EMBEDDING_BACKEND: hashing
+          EMBEDDING_DIMENSION: "384"
         run: pytest tests -q

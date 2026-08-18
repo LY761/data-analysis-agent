@@ -25,6 +25,8 @@ NL_ANSWER_LLM = os.getenv("NL_ANSWER_LLM", "false").lower() == "true"
 # 嵌入模型配置（本地运行，不需要网络和API Key）
 # bge-small: 384维/130MB ~50ms编码 | bge-large: 1024维/1.3GB ~500ms编码
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence_transformer").lower()
+EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "384"))
 
 # ChromaDB向量库持久化目录
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")

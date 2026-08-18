@@ -39,6 +39,7 @@
 - 未采用方案及原因：暂未加入前端构建，当前前端为静态资源且无独立包管理配置。
 - 修改文件：`.github/workflows/ci.yml`、`backend/requirements-dev.txt`。
 - 测试结果：本地 `compileall`、`pip check` 和 108 项测试通过；远程 CI 以 GitHub Actions 运行结果为准。
+- CI 修复记录：首次远程运行发现 Python 3.11 f-string 兼容问题和 HuggingFace 模型下载依赖；已改为兼容语法，并新增 `hashing` Embedding 离线后端供 CI 使用。
 - 安全与兼容性影响：CI 只读取仓库内容；密钥通过环境变量注入，不写入版本库。
 - 简历 Bullet 候选：为 Agent 项目建立包含密钥扫描、依赖校验、静态编译与 108 项回归测试的 GitHub Actions 质量门。
 - 后续事项：在 M1 增加端到端评测阈值和报告制品。

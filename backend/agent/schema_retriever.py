@@ -9,12 +9,21 @@ Schema检索器 — 把数据库表结构转成向量，按用户问题语义检
 v2: 数据层抽象为 VectorStore 接口（Chroma/Milvus 可切换），Milvus 后端完整实现。
 """
 import json
+import hashlib
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from typing import Optional
-from sentence_transformers import SentenceTransformer
-from config import EMBEDDING_MODEL, CHROMA_PERSIST_DIR, VECTOR_STORE, MILVUS_HOST, MILVUS_PORT
+from config import (
+    CHROMA_PERSIST_DIR,
+    EMBEDDING_BACKEND,
+    EMBEDDING_DIMENSION,
+    EMBEDDING_MODEL,
+    MILVUS_HOST,
+    MILVUS_PORT,
+    VECTOR_STORE,
+)
 from chromadb.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -289,7 +298,8 @@ class SchemaRetriever:
     def __init__(self):
         self.model = None
         self.schema_catalog: dict[str, dict] = {}
-        model_tag = re.sub(r"[^A-Za-z0-9]+", "_", EMBEDDING_MODEL).strip("_")
+        model_identity = EMBEDDING_MODEL if EMBEDDING_BACKEND == "sentence_transformer" else f"hashing-{EMBEDDING_DIMENSION}"
+        model_tag = re.sub(r"[^A-Za-z0-9]+", "_", model_identity).strip("_")
         self.collection_name = f"schema_embeddings_{model_tag}"
         self.store = get_vector_store(self.collection_name)
         self.collection = self.store
@@ -298,14 +308,29 @@ class SchemaRetriever:
         self.schema_catalog = {item["table"]: item for item in schema_list}
 
     def _ensure_model(self):
-        if self.model is None:
+        if EMBEDDING_BACKEND == "sentence_transformer" and self.model is None:
+            from sentence_transformers import SentenceTransformer
+
             logger.info("[SchemaRetriever] loading embedding model: %s", EMBEDDING_MODEL)
             self.model = SentenceTransformer(EMBEDDING_MODEL)
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
+        if EMBEDDING_BACKEND == "hashing":
+            return [self._hash_embed(text) for text in texts]
         self._ensure_model()
         embeddings = self.model.encode(texts, normalize_embeddings=True)
         return embeddings.tolist()
+
+    @staticmethod
+    def _hash_embed(text: str) -> list[float]:
+        vector = [0.0] * EMBEDDING_DIMENSION
+        tokens = re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+", text.lower())
+        for token in tokens:
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+            index = int.from_bytes(digest[:4], "big") % EMBEDDING_DIMENSION
+            vector[index] += 1.0 if digest[4] % 2 == 0 else -1.0
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
 
     def index_schemas(self, schema_list: list[dict], force: bool = False):
         self.set_schema_catalog(schema_list)
