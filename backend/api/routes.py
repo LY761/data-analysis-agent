@@ -297,12 +297,9 @@ async def query_stream(request: QueryRequest):
     """
     SSE流式查询接口 — 实时推送进度 + 逐token输出回答。
 
-    事件：
-      event: status   data: {"message": "正在生成SQL..."}   阶段进度
-      event: answer   data: {"delta": "显示器..."}          回答逐token（打字效果）
-      event: result   data: <完整响应，与 /api/query 一致>
-      event: error    data: {"message": "..."}
-      event: done     data: {}
+    标准事件：message.start / route.selected / retrieval.start|complete /
+    answer.delta / message.completed|error。旧 status/answer/result/error/done
+    暂时保留，兼容现有 Web 客户端。
     """
     import json as _json
     from agent.agent_router import agent_router
@@ -328,23 +325,35 @@ async def query_stream(request: QueryRequest):
                 if kind == "status":
                     yield sse("status", {"message": payload})
                 elif kind == "answer":
+                    yield sse("answer.delta", {"delta": payload})
                     yield sse("answer", {"delta": payload})
+
+        yield sse("message.start", {"request_id": trace_id, "session_id": request.session_id})
 
         # ── 智能路由 ──
         route = await asyncio.to_thread(agent_router.route, request.question)
         mode = route.get("mode")
+        yield sse("route.selected", {"intent": mode})
 
         # 问候和能力说明直接流式返回。
         if mode == "chat":
             reply = route.get("reply", "") or ""
             for index in range(0, len(reply), 5):
-                yield sse("answer", {"delta": reply[index:index + 5]})
+                delta = reply[index:index + 5]
+                yield sse("answer.delta", {"delta": delta})
+                yield sse("answer", {"delta": delta})
                 await asyncio.sleep(0.02)
+            yield sse("message.completed", {
+                "request_id": trace_id,
+                "intent": mode,
+                "answer": reply,
+                "citations": [],
+            })
             yield sse("done", {})
             return
         # 需要澄清 → 一次性返回反问
         if mode == "clarify":
-            yield sse("result", {
+            response_data = {
                 "question": request.question,
                 "clarification_needed": True,
                 "follow_up_questions": route.get("follow_up_questions", ["您想分析什么指标？"]),
@@ -353,11 +362,14 @@ async def query_stream(request: QueryRequest):
                 "sql": "", "data": [], "columns": [], "row_count": 0,
                 "chart": {}, "execution_time_ms": 0, "warnings": [],
                 "error": None, "schema_tables": [], "retry_count": 0, "trace_id": trace_id,
-            })
+            }
+            yield sse("result", response_data)
+            yield sse("message.completed", response_data)
             yield sse("done", {})
             return
 
         # sql_query → 走 LangGraph 流水线 + 流式
+        yield sse("retrieval.start", {"source": "schema", "top_k": 3})
         yield sse("status", {"message": "正在理解问题，检索相关数据..."})
 
         effective_question = route.get("rewritten") or request.question
@@ -417,7 +429,14 @@ async def query_stream(request: QueryRequest):
                 retrieval_span.flush()
             except Exception:
                 pass
-            yield sse("error", {"message": f"查询失败: {e}"})
+            error_data = {
+                "request_id": trace_id,
+                "code": "DATA_AGENT_STREAM_FAILED",
+                "message": f"查询失败: {e}",
+                "retryable": False,
+            }
+            yield sse("message.error", error_data)
+            yield sse("error", {"message": error_data["message"]})
             yield sse("done", {})
             return
 
@@ -455,10 +474,19 @@ async def query_stream(request: QueryRequest):
         }
         response_data = mask_result(response_data)
 
+        yield sse("retrieval.complete", {
+            "tables": len(response_data.get("schema_tables", [])),
+            "columns": len(response_data.get("schema_columns", [])),
+        })
         yield sse("result", response_data)
+        yield sse("message.completed", response_data)
         yield sse("done", {})
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/health")

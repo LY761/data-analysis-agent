@@ -43,3 +43,20 @@
 - 安全与兼容性影响：CI 只读取仓库内容；密钥通过环境变量注入，不写入版本库。
 - 简历 Bullet 候选：为 Agent 项目建立包含密钥扫描、依赖校验、静态编译与 108 项回归测试的 GitHub Actions 质量门。
 - 后续事项：在 M1 增加端到端评测阈值和报告制品。
+
+## EDA-104 流式 Agent Trace
+
+- 日期：2026-08-18
+- 状态：completed
+- 采用方案：在现有 `/api/query/stream` 上补充与法律项目一致的 SSE 事件模型，并保留旧事件完成渐进兼容。
+- 修改文件：`backend/api/routes.py`、`backend/tests/test_metrics_flow.py`。
+- 测试结果：流式指标与标准事件专项 3/3 通过；全量基线保持 108/108。
+- 证据文件：`docs/MEMORY_AND_STREAMING_EVALUATION.md`。
+- 简历 Bullet 候选：统一电商问数与法律 RAG 的 SSE Agent Trace 协议，实时输出路由、检索、答案与结构化错误状态，并兼容旧 Web 客户端。
+
+## EDA-103 多轮问数记忆专项
+
+- 日期：2026-08-18
+- 状态：in_progress
+- 已完成：SQLite 会话轮次、窗口控制、主题识别、追问继承和历史搜索已有自动化测试。
+- 未完成：受控长期记忆、TTL/重要性衰减、跨租户隔离专项和删除后残留率评测。

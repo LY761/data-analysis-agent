@@ -55,7 +55,11 @@ def test_query_stream_writes_metrics():
     r = client.post("/api/query/stream",
                     json={"question": "g_stream_指标测试-哪个供应商的订单最多"})
     assert r.status_code == 200
-    _ = r.text  # 消费 SSE 流（触发完整执行）
+    body = r.text  # 消费 SSE 流（触发完整执行）
+    assert "event: message.start" in body
+    assert "event: route.selected" in body
+    assert "event: retrieval.start" in body
+    assert "event: message.completed" in body or "event: message.error" in body
     conn = sqlite3.connect(DEMO_DB_PATH)
     n = conn.execute(
         "SELECT COUNT(*) FROM retrieval_log WHERE question LIKE 'g_stream_指标测试%'"
